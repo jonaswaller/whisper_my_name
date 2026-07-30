@@ -1,0 +1,31 @@
+{
+  "name": "whisper-my-name",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Hotkey trading client for Polymarket LoL esports markets",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "npm run build && electron .",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx scripts/test-fills.ts && tsx scripts/test-presign.ts",
+    "resolve": "tsx src/agent/market.ts",
+    "trade": "tsx scripts/trade.ts",
+    "verify-auth": "tsx scripts/verify-auth.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "electron": "^43.2.0",
+    "esbuild": "^0.28.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "@polymarket/client": "^0.2.0",
+    "@types/ws": "^8.18.1",
+    "undici": "^7.29.0",
+    "viem": "^2.55.10",
+    "ws": "^8.21.1"
+  },
+  "main": "dist/main/index.cjs"
+}

@@ -1,0 +1,18 @@
+# Secrets — never commit. The signer key controls the wallet outright.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local trading config (sizes, slippage, last armed market)
+config.local.json
+
+node_modules/
+dist/
+out/
+build/
+*.log
+.DS_Store
+.vscode/
+.idea/
