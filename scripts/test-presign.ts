@@ -10,11 +10,12 @@ import { EventEmitter } from 'node:events';
 import { PresignCache, type Tier } from '../src/agent/presign.ts';
 
 const TOKEN = 'tok-A';
-const TARGET = { tokenId: TOKEN, tickSize: 0.01, minOrderSize: 5 };
 const TIERS: Tier[] = [
   { label: 'small', notional: 50, slippageCents: 3 },
   { label: 'semi-big', notional: 250, slippageCents: 8 },
 ];
+// Tiers now live on the target: each side carries its own sizes.
+const TARGET = { tokenId: TOKEN, tickSize: 0.01, minOrderSize: 5, tiers: TIERS };
 
 /** Minimal stand-in for BookFeed with a settable ask. */
 class FakeBook extends EventEmitter {
@@ -57,7 +58,7 @@ console.log('\npresign cache:\n');
   const book = new FakeBook();
   const signer = new FakeSigner();
   const cache = new PresignCache(signer as any, book as any, { debounceMs: 10 });
-  await cache.arm([TARGET], TIERS);
+  await cache.arm([TARGET]);
 
   check('arm() signs every tier immediately', signer.calls.length === 2, `${signer.calls.length} signs`);
   check(
@@ -74,7 +75,7 @@ console.log('\npresign cache:\n');
   const book = new FakeBook();
   const signer = new FakeSigner();
   const cache = new PresignCache(signer as any, book as any, { debounceMs: 10 });
-  await cache.arm([TARGET], TIERS);
+  await cache.arm([TARGET]);
   const before = signer.calls.length;
 
   const taken = await cache.take(TARGET, 0);
@@ -96,7 +97,7 @@ console.log('\npresign cache:\n');
   const book = new FakeBook();
   const signer = new FakeSigner();
   const cache = new PresignCache(signer as any, book as any, { debounceMs: 10_000 });
-  await cache.arm([TARGET], TIERS);
+  await cache.arm([TARGET]);
 
   // Debounce is long, so the cache cannot silently re-sign behind our back.
   book.ask = 0.70; // would now cap at 0.73, not 0.88 — 15 ticks of drift
@@ -112,7 +113,7 @@ console.log('\npresign cache:\n');
   const book = new FakeBook();
   const signer = new FakeSigner();
   const cache = new PresignCache(signer as any, book as any, { debounceMs: 10_000 });
-  await cache.arm([TARGET], TIERS);
+  await cache.arm([TARGET]);
 
   book.ask = 0.86; // cap would be 0.89 vs cached 0.88 — one tick
 
@@ -127,9 +128,9 @@ console.log('\npresign cache:\n');
   const signer = new FakeSigner();
   signer.delayMs = 60;
   const cache = new PresignCache(signer as any, book as any, { debounceMs: 10_000 });
-  const arming = cache.arm([TARGET], TIERS);
+  const arming = cache.arm([TARGET]);
   await sleep(10);
-  await cache.arm([TARGET], TIERS); // switch markets mid-flight
+  await cache.arm([TARGET]); // switch markets mid-flight
   await arming;
   await sleep(150);
 

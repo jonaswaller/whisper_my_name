@@ -46,6 +46,15 @@ interface BookState {
   bestBid: Level | null;
   bestAsk: Level | null;
   updatedAt: number;
+  /**
+   * Live tick size for this token.
+   *
+   * Not a constant: the venue changes it as a market matures, and the same LPL
+   * market read 0.01 one week and 0.001 the next. An order priced off a stale
+   * tick is off-tick and rejected, so this tracks the stream rather than the
+   * value Gamma reported when the market was armed.
+   */
+  tickSize: number | null;
 }
 
 function parseLevels(raw: unknown): Map<number, number> {
@@ -118,6 +127,14 @@ export class BookFeed extends EventEmitter {
       askSize: state.bestAsk.size,
       ageMs: Date.now() - state.updatedAt,
     };
+  }
+
+  /**
+   * Live tick size from the stream, or null before the first snapshot. Callers
+   * should fall back to the market's arm-time value when this is null.
+   */
+  tickSize(tokenId: string): number | null {
+    return this.books.get(tokenId)?.tickSize ?? null;
   }
 
   getStatus(): FeedStatus {
@@ -208,7 +225,10 @@ export class BookFeed extends EventEmitter {
         case 'price_change':
           this.applyPriceChange(m);
           break;
-        // tick_size_change / last_trade_price carry nothing the hot path needs.
+        case 'tick_size_change':
+          this.applyTickChange(m);
+          break;
+        // last_trade_price carries nothing the hot path needs.
       }
     }
   }
@@ -216,16 +236,38 @@ export class BookFeed extends EventEmitter {
   private applySnapshot(m: Record<string, any>): void {
     const tokenId = String(m.asset_id ?? '');
     if (!tokenId) return;
+    const tick = Number(m.tick_size);
     const state: BookState = {
       bids: parseLevels(m.bids),
       asks: parseLevels(m.asks),
       bestBid: null,
       bestAsk: null,
       updatedAt: Date.now(),
+      // Carry the previous tick forward if a snapshot omits it.
+      tickSize: Number.isFinite(tick) && tick > 0
+        ? tick
+        : (this.books.get(tokenId)?.tickSize ?? null),
     };
     recomputeBest(state);
     this.books.set(tokenId, state);
     this.setStatus('live');
+    this.emit('update', tokenId);
+  }
+
+  /**
+   * The venue changed this market's price increment. Everything priced off the
+   * old tick — presigned caps, the "sell at max" price — is now wrong, so this
+   * is announced rather than absorbed silently.
+   */
+  private applyTickChange(m: Record<string, any>): void {
+    const tokenId = String(m.asset_id ?? '');
+    const next = Number(m.new_tick_size ?? m.tick_size);
+    const state = this.books.get(tokenId);
+    if (!state || !Number.isFinite(next) || next <= 0) return;
+    if (state.tickSize === next) return;
+
+    state.tickSize = next;
+    this.emit('tick-change', tokenId, next);
     this.emit('update', tokenId);
   }
 

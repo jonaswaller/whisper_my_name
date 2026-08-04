@@ -13,6 +13,15 @@ contextBridge.exposeInMainWorld('api', {
   fire: (action: unknown) => ipcRenderer.invoke('fire', action),
   snapshot: () => ipcRenderer.invoke('snapshot'),
 
+  // Standing (GTC) sells — these rest on the book until filled or cancelled.
+  sellLimit: (side: string, price: number) => ipcRenderer.invoke('sell-limit', side, price),
+  sellAtAsk: (side: string) => ipcRenderer.invoke('sell-at-ask', side),
+  sellAtMax: (side: string) => ipcRenderer.invoke('sell-at-max', side),
+  cancelOrder: (orderId: string) => ipcRenderer.invoke('cancel-order', orderId),
+  cancelAll: () => ipcRenderer.invoke('cancel-all'),
+  /** Suspend global hotkeys while a price field has focus. */
+  suspendHotkeys: (suspended: boolean) => ipcRenderer.invoke('suspend-hotkeys', suspended),
+
   onSnapshot: (cb: (s: unknown) => void) =>
     ipcRenderer.on('snapshot', (_e, s) => cb(s)),
   onReady: (cb: (info: unknown) => void) => ipcRenderer.on('ready', (_e, i) => cb(i)),
@@ -21,4 +30,21 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('pressed', (_e, a) => cb(a)),
   onHotkeyWarning: (cb: (msg: string) => void) =>
     ipcRenderer.on('hotkey-warning', (_e, m) => cb(m)),
+  onHotkeysSuspended: (cb: (suspended: boolean) => void) =>
+    ipcRenderer.on('hotkeys-suspended', (_e, s) => cb(s)),
+  /** Which accelerator is actually bound to which action. */
+  onHotkeys: (cb: (list: unknown) => void) => ipcRenderer.on('hotkeys', (_e, l) => cb(l)),
+  platform: process.platform,
+
+  // Every action is bindable; buttons call the same dispatcher as the keys.
+  runAction: (id: string) => ipcRenderer.invoke('run-action', id),
+  listActions: () => ipcRenderer.invoke('list-actions'),
+  setBinding: (id: string, accelerator: string | null) =>
+    ipcRenderer.invoke('set-binding', id, accelerator),
+  setWatchWallet: (wallet: string) => ipcRenderer.invoke('set-watch-wallet', wallet),
+  onWatchedTrade: (cb: (t: unknown) => void) =>
+    ipcRenderer.on('watched-trade', (_e, t) => cb(t)),
+  /** Main asks the renderer for the price typed into a side's box. */
+  onRequestLimitPrice: (cb: (side: string) => void) =>
+    ipcRenderer.on('request-limit-price', (_e, s) => cb(s)),
 });

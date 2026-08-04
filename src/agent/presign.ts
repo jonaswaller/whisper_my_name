@@ -40,6 +40,11 @@ export interface PresignTarget {
   tokenId: string;
   tickSize: number;
   minOrderSize: number;
+  /**
+   * This side's own tiers. Sizes are per side, so the cache cannot share one
+   * tier list across both tokens.
+   */
+  tiers: Tier[];
 }
 
 export interface SigningClient {
@@ -89,7 +94,6 @@ export class PresignCache extends EventEmitter {
   private cache = new Map<string, CacheEntry>();
   private inFlight = new Set<string>();
   private targets: PresignTarget[] = [];
-  private tiers: Tier[] = [];
   private debounce: NodeJS.Timeout | null = null;
   private generation = 0;
   private readonly driftTicks: number;
@@ -111,12 +115,11 @@ export class PresignCache extends EventEmitter {
    * Warming here rather than lazily on first press is deliberate — the cold
    * 1.9s sign would otherwise land on his first keypress of the match.
    */
-  async arm(targets: PresignTarget[], tiers: Tier[]): Promise<void> {
+  async arm(targets: PresignTarget[]): Promise<void> {
     this.generation += 1;
     this.cache.clear();
     this.inFlight.clear();
-    this.targets = [...targets];
-    this.tiers = [...tiers];
+    this.targets = targets.map((t) => ({ ...t, tiers: [...t.tiers] }));
 
     // off() first: arm() runs again on every market switch (hotkey 9), and
     // without this each switch would stack another listener, multiplying the
@@ -138,7 +141,7 @@ export class PresignCache extends EventEmitter {
   private async refreshAll(): Promise<void> {
     const work: Promise<void>[] = [];
     for (const target of this.targets) {
-      for (const [tierIndex, tier] of this.tiers.entries()) {
+      for (const [tierIndex, tier] of target.tiers.entries()) {
         if (this.needsRefresh(target, tierIndex, tier)) {
           work.push(this.sign(target, tierIndex, tier));
         }
@@ -214,7 +217,7 @@ export class PresignCache extends EventEmitter {
    * cap is still honest, otherwise signs inline and reports how long it took.
    */
   async take(target: PresignTarget, tierIndex: number): Promise<ReadyOrder | null> {
-    const tier = this.tiers[tierIndex];
+    const tier = target.tiers[tierIndex];
     if (!tier) return null;
     const top = this.book.top(target.tokenId);
     if (!top) return null;
@@ -263,7 +266,7 @@ export class PresignCache extends EventEmitter {
   status(): { tokenId: string; tierIndex: number; ready: boolean; ageMs: number }[] {
     const out: { tokenId: string; tierIndex: number; ready: boolean; ageMs: number }[] = [];
     for (const target of this.targets) {
-      for (let i = 0; i < this.tiers.length; i++) {
+      for (let i = 0; i < target.tiers.length; i++) {
         const entry = this.cache.get(key(target.tokenId, i));
         out.push({
           tokenId: target.tokenId,
