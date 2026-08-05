@@ -19,8 +19,15 @@ let hotkeys = {};
  */
 function keyLabel(accel) {
   if (!accel) return '·';
-  const last = String(accel).split('+').pop() ?? '';
-  return last.replace(/^num/i, '') || '·';
+  const parts = String(accel).split('+');
+  const last = parts[parts.length - 1] ?? '';
+  // Numpad operators must show their symbol; stripping "num" alone rendered
+  // them as "div", "mult", "sub" — meaningless on a keycap.
+  const SYMBOL = { numdiv: '/', nummult: '*', numsub: '-', numadd: '+', numdec: '.' };
+  const base = SYMBOL[last.toLowerCase()] ?? last.replace(/^num/i, '');
+  // Keep Shift visible: Shift+. is a different key from . and must look it.
+  const shifted = parts.some((p) => p.toLowerCase() === 'shift');
+  return (shifted ? '⇧' : '') + (base || '·');
 }
 
 const keyFor = (label) => keyLabel(hotkeys[label]);
@@ -72,8 +79,7 @@ function buildRows(side) {
   );
   host.querySelectorAll('input').forEach((input) => {
     input.addEventListener('change', pushConfig);
-    // Don't let a focused field swallow keys meant for trading.
-    input.addEventListener('keydown', (e) => e.stopPropagation());
+    guardInput(input);
   });
 }
 
@@ -192,6 +198,21 @@ function renderPing(a) {
   }
 }
 
+/**
+ * Make a field safely typeable.
+ *
+ * Global hotkeys fire regardless of focus, including inside this window, so
+ * they are suspended while any field has focus. Without this, typing a size
+ * with the numpad places orders, and bound keys are swallowed before the field
+ * ever sees them — which is why editing a value sometimes appeared to do
+ * nothing.
+ */
+function guardInput(input) {
+  input.addEventListener('focus', () => api.suspendHotkeys(true));
+  input.addEventListener('blur', () => api.suspendHotkeys(false));
+  input.addEventListener('keydown', (e) => e.stopPropagation());
+}
+
 /** Resting orders — money committed on the book that he must be able to see. */
 function renderOrders(orders, maxResting) {
   $('#ocount').textContent = orders.length;
@@ -223,17 +244,23 @@ function renderOrders(orders, maxResting) {
  * every render instead of being written into the HTML.
  */
 function renderMaxPrice(maxResting) {
+  // "at 99.9c" is fixed: it is declined rather than downgraded when the market
+  // cannot price that finely, so the button always reads 99.9c.
+  const allowed = maxResting !== null && maxResting >= 0.999;
   document.querySelectorAll('.max-px').forEach((el) => {
-    el.textContent = maxResting ?? '–';
+    el.textContent = '99.9c';
   });
   document.querySelectorAll('.sell-max').forEach((b) => {
-    b.title = maxResting
-      ? `highest price this market allows (tick ${maxResting === 0.999 ? '0.001' : '0.01'}) — rests until filled or cancelled`
-      : 'arm a market first';
+    b.classList.toggle('notyet', maxResting !== null && !allowed);
+    b.title = allowed
+      ? 'rests the whole position at 0.999 until filled or cancelled'
+      : maxResting === null
+        ? 'arm a market first'
+        : `not available yet — this market's tick only allows ${maxResting}. It usually tightens later in the match.`;
   });
   document
     .querySelectorAll('.limit-px')
-    .forEach((i) => (i.placeholder = maxResting ? `max ${maxResting}` : 'price'));
+    .forEach((i) => (i.placeholder = 'cents e.g. 88'));
 }
 
 /**
@@ -456,14 +483,22 @@ $('#binder-close').addEventListener('click', () => $('#binder').classList.remove
 // currently typed into that side's box.
 api.onRequestLimitPrice(async (side) => {
   const px = $(`#side-${side} .limit-px`);
-  const price = Number(px?.value);
-  if (!price) {
-    log('warn', `no price typed for ${side} — type one in the box first`);
+  const cents = Number(px?.value);
+  if (!px?.value || !Number.isFinite(cents) || cents <= 0) {
+    log('warn', `no price typed for ${side} — enter one in cents (e.g. 88) first`);
     return;
   }
-  const res = await api.sellLimit(side, price);
+  if (cents > 99.9) {
+    log('error', `${cents}c is above the 99.9c maximum`);
+    return;
+  }
+  // The box is in cents; the venue wants a price.
+  const res = await api.sellLimit(side, cents / 100);
   if (!res.ok) log('error', res.error);
-  else px.value = '';
+  else {
+    px.value = '';
+    $(`#side-${side} .limit-preview`).textContent = '';
+  }
 });
 
 // --- wiring ------------------------------------------------------------------
@@ -505,13 +540,15 @@ $('#dry').addEventListener('click', async () => {
 
   const px = $('.limit-px', root);
   $('.sell-limit', root).addEventListener('click', () => api.runAction(`sellLimit${side}`));
+  // Prices are typed in CENTS: "88" not "0.88".
+  px.addEventListener('input', () => {
+    const c = Number(px.value);
+    $('.limit-preview', root).textContent =
+      px.value === '' || !Number.isFinite(c) ? '' : `= $${(c / 100).toFixed(3)}`;
+  });
 
-  // The numpad is bound to buy hotkeys and fires even while this window has
-  // focus, so typing a price with it would place orders. Suspend while focused.
-  px.addEventListener('focus', () => api.suspendHotkeys(true));
-  px.addEventListener('blur', () => api.suspendHotkeys(false));
+  guardInput(px);
   px.addEventListener('keydown', (e) => {
-    e.stopPropagation();
     if (e.key === 'Enter') $('.sell-limit', root).click();
   });
 });
@@ -602,6 +639,39 @@ $('#copy-log').addEventListener('click', async () => {
     log('warn', 'clipboard blocked — select the text and use Cmd/Ctrl+C');
   }
 });
+
+// --- Num Lock detection ------------------------------------------------------
+//
+// Numpad bindings only work with Num Lock ON. With it off, Windows sends the
+// same virtual keys as the arrows/Home/Delete, which we deliberately do not
+// bind (binding them made arrow keys place orders). So the keys simply do
+// nothing, which is indistinguishable from a broken app.
+//
+// This only fires while the window has focus — Chromium reports the modifier
+// on a real key event and nowhere else — but that covers the case where he is
+// looking at the app wondering why a key did nothing.
+window.addEventListener(
+  'keydown',
+  (e) => {
+    const isNumpadKey = typeof e.code === 'string' && e.code.startsWith('Numpad');
+    let numLockOn = null;
+    try {
+      numLockOn = e.getModifierState('NumLock');
+    } catch {
+      return; // not reported on this platform
+    }
+    const banner = $('#numlock');
+    if (!banner) return;
+
+    // A numpad press arriving with Num Lock off is the smoking gun.
+    if (isNumpadKey && numLockOn === false) {
+      banner.classList.add('on');
+    } else if (numLockOn === true) {
+      banner.classList.remove('on');
+    }
+  },
+  true,
+);
 
 // --- tabs, inventory, watch --------------------------------------------------
 
@@ -696,9 +766,10 @@ $('#watch-addr').addEventListener('change', async (e) => {
   }
   await api.setWatchWallet(addr);
 });
-$('#watch-addr').addEventListener('focus', () => api.suspendHotkeys(true));
-$('#watch-addr').addEventListener('blur', () => api.suspendHotkeys(false));
-$('#watch-addr').addEventListener('keydown', (e) => e.stopPropagation());
+// Every remaining text field gets the same treatment: global hotkeys fire
+// regardless of focus, so any unguarded field lets typing place orders.
+guardInput($('#watch-addr'));
+guardInput($('#url'));
 
 // Alert even when the Watch tab isn't showing.
 api.onWatchedTrade((t) => {

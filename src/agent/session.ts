@@ -104,6 +104,12 @@ export interface LogEntry {
  */
 const SELL_GUARD_MS = 2_000;
 
+/**
+ * The only price the "sell at 99.9c" action will use. Never rounded down to
+ * 0.99 — that is a different trade, and he wants it declined instead.
+ */
+const TARGET_MAX_PRICE = 0.999;
+
 const EMPTY_SIDE: SideView = {
   name: '—',
   tokenId: '',
@@ -479,15 +485,30 @@ export class Session extends EventEmitter {
   }
 
   /**
-   * Sell at the highest price this market permits — 0.999 where the tick is
-   * 0.001, 0.99 where it is 0.01. Effectively "exit at resolution value".
+   * Sell the position at 99.9c — and ONLY at 99.9c.
+   *
+   * Markets start on a 0.01 tick and move to 0.001 as they mature, so 0.999 is
+   * not always placeable. Falling back to 0.99 would be a materially different
+   * trade (a whole cent per share) made silently on his behalf, so when the
+   * market cannot take 0.999 this declines and says why.
    */
   async sellAtMax(side: 'A' | 'B'): Promise<void> {
     const market = this.market;
-    if (!market) return;
+    if (!market) {
+      this.stamp(`SELL ${side} @ 99.9c`, 'blocked', null, 'no market armed');
+      return;
+    }
     const outcome = side === 'A' ? market.teamA : market.teamB;
     const tick = this.tickFor(outcome.tokenId);
-    return this.placeStandingSell(side, maxRestingPrice(tick), `at ${maxRestingPrice(tick)}`);
+    const best = maxRestingPrice(tick);
+
+    if (best < TARGET_MAX_PRICE - 1e-9) {
+      const detail = `this market's tick is ${tick} — the best it allows is ${best}, not 0.999`;
+      this.stamp(`SELL ${side} @ 99.9c`, 'blocked', null, detail);
+      this.push('warn', `99.9c declined: ${detail}. Ticks usually tighten later in a match.`);
+      return;
+    }
+    return this.placeStandingSell(side, TARGET_MAX_PRICE, 'at 0.999');
   }
 
   private async placeStandingSell(

@@ -42,8 +42,8 @@ export const ACTIONS: ActionSpec[] = [
 
   { id: 'sellAskA', label: 'Sell A at ASK', group: 'Standing (limit)', hint: 'rests at the offer' },
   { id: 'sellAskB', label: 'Sell B at ASK', group: 'Standing (limit)', hint: 'rests at the offer' },
-  { id: 'sellMaxA', label: 'Sell A at max', group: 'Standing (limit)', hint: '0.99 or 0.999 by tick' },
-  { id: 'sellMaxB', label: 'Sell B at max', group: 'Standing (limit)', hint: '0.99 or 0.999 by tick' },
+  { id: 'sellMaxA', label: 'Sell A at 99.9c', group: 'Standing (limit)', hint: 'declines unless the market allows 0.999' },
+  { id: 'sellMaxB', label: 'Sell B at 99.9c', group: 'Standing (limit)', hint: 'declines unless the market allows 0.999' },
   {
     id: 'sellLimitA',
     label: 'Sell A at typed price',
@@ -80,28 +80,30 @@ export const NUMPAD_BINDINGS: Bindings = {
   sellAskB: 'nummult',     // *
   sellMaxA: 'numsub',      // -
   sellMaxB: 'numadd',      // +
-  sellLimitA: 'numdec',    // .
-  sellLimitB: 'numenter',
+  sellLimitA: 'numdec',        // .
+  // NOT 'numenter': Electron rejects it outright ("conversion failure from
+  // numenter"), so that action would never bind. Shift+. keeps B on the same
+  // physical key as A. Verified to register.
+  sellLimitB: 'Shift+numdec',
 };
 
 /**
- * Num-Lock-off twins. With Num Lock off, a Windows numpad sends navigation keys
- * instead of digits and every binding silently stops working, so both are
- * registered.
+ * DELIBERATELY EMPTY — do not reintroduce these.
+ *
+ * These used to map each numpad key to the key Windows sends with Num Lock OFF
+ * (num8 -> Up, num4 -> Left, num7 -> Home, numdec -> Delete, ...) so bindings
+ * survived either Num Lock state.
+ *
+ * Windows sends the SAME virtual key for numpad-with-Num-Lock-off as for the
+ * dedicated navigation keys, and Electron cannot distinguish them. Registering
+ * them globally therefore meant:
+ *   - the ARROW KEYS placed live orders (left/right/up/down = buy 4/6/8/2)
+ *   - Home, End, Delete, Insert and PageUp/Down were swallowed system-wide,
+ *     so text fields could not be edited with the keyboard
+ *
+ * Requiring Num Lock ON is a far smaller cost than either of those.
  */
-export const NUMLOCK_OFF_ALIASES: Record<string, string> = {
-  num1: 'End',
-  num2: 'Down',
-  num3: 'PageDown',
-  num4: 'Left',
-  num5: 'Clear',
-  num6: 'Right',
-  num7: 'Home',
-  num8: 'Up',
-  num9: 'PageUp',
-  num0: 'Insert',
-  numdec: 'Delete',
-};
+export const NUMLOCK_OFF_ALIASES: Record<string, string> = {};
 
 /** Mac dev fallback — laptops have no numpad, and bare digits can't be global. */
 export const MAC_BINDINGS: Bindings = {
@@ -148,7 +150,10 @@ function isSafeBare(key: string): boolean {
   const k = key.toLowerCase();
   if (/^num([0-9]|div|mult|sub|add|dec|enter)$/.test(k)) return true;
   if (/^f([1-9]|1\d|2[0-4])$/.test(k)) return true;
-  return ['insert', 'delete', 'home', 'end', 'pageup', 'pagedown', 'up', 'down', 'left', 'right', 'clear'].includes(k);
+  // Navigation keys are NOT safe: on Windows they share a virtual key with the
+  // numpad under Num Lock off, so binding one grabs the real arrow/Home/Delete
+  // key too — placing orders from arrow keys and breaking text editing.
+  return false;
 }
 
 /**
@@ -163,6 +168,10 @@ export function validateAccelerator(accelerator: string): string | null {
   if (!key) return 'no key captured';
   if (hasModifier || isSafeBare(key)) return null;
 
+  const nav = ['up', 'down', 'left', 'right', 'home', 'end', 'pageup', 'pagedown', 'insert', 'delete', 'clear'];
+  if (nav.includes(key.toLowerCase())) {
+    return `"${key}" cannot be used: Windows sends the same key for the numpad with Num Lock off, so binding it would make the arrow/navigation keys place orders.`;
+  }
   return `"${key}" on its own would fire while you type anywhere. Hold Ctrl/Cmd, Alt or Shift, or use a numpad or F key.`;
 }
 

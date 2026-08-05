@@ -54,7 +54,13 @@ check('letter with a modifier is fine', validateAccelerator('CommandOrControl+Al
 check('bare numpad key is fine', validateAccelerator('num4'), null);
 check('bare numpad operator is fine', validateAccelerator('numdiv'), null);
 check('bare F key is fine', validateAccelerator('F5'), null);
-check('Num-Lock-off nav key is fine', validateAccelerator('Home'), null);
+// Navigation keys share a virtual key with the numpad under Num Lock off, so
+// binding one would make the real arrow/Home/Delete keys place orders and
+// swallow them from every text field.
+check('arrow keys are rejected', validateAccelerator('Up') !== null, true);
+check('Home is rejected', validateAccelerator('Home') !== null, true);
+check('Delete is rejected', validateAccelerator('Delete') !== null, true);
+check('arrow WITH a modifier is fine', validateAccelerator('Control+Up'), null);
 
 // Sides are independent: editing A must not touch B.
 check('editing side A leaves side B alone', merged.tiers.B[0].notional, DEFAULT_CONFIG.tiers.B[0].notional);

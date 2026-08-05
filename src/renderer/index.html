@@ -180,7 +180,10 @@
       .srow:last-child { margin-bottom: 0; }
       .srow button { flex: 1; padding: 7px 6px; font-size: 11.5px; }
       .srow button b { color: var(--ok); font-weight: normal; }
-      .limit-px { width: 86px; text-align: right; }
+      .limit-px { width: 96px; text-align: right; }
+      .limit-preview { color: var(--dim); font-size: 10.5px; align-self: center;
+                       min-width: 62px; }
+      .sell-max.notyet { opacity: 0.45; border-color: var(--warn); }
       .sell-limit { background: #1b2430; }
 
       #orders { margin: 0 10px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
@@ -207,6 +210,11 @@
         padding: 4px; font-weight: bold; font-size: 12px;
       }
       #paused.on { display: block; }
+      #numlock {
+        display: none; background: var(--warn); color: #0d1117; text-align: center;
+        padding: 5px; font-weight: bold; font-size: 12px;
+      }
+      #numlock.on { display: block; }
       #ping { color: var(--dim); font-size: 11px; max-width: 430px;
               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       #ping b { color: var(--text); font-weight: normal; }
@@ -295,6 +303,8 @@
       <button class="tab" data-tab="watch">Watch <span id="watch-badge"></span></button>
     </nav>
 
+    <div id="numlock">NUM LOCK IS OFF — the numpad hotkeys will not fire. Press Num Lock.</div>
+
     <div id="paused">HOTKEYS PAUSED — typing a price. Click away to re-enable.</div>
 
     <div id="meta">
@@ -328,7 +338,8 @@
           </div>
           <div class="sells-all">sells <b class="all-qty">–</b></div>
           <div class="srow">
-            <input class="limit-px" type="number" step="0.001" min="0" placeholder="price" />
+            <input class="limit-px" type="number" step="0.1" min="0" max="99.9" placeholder="cents e.g. 88" />
+            <span class="limit-preview"></span>
             <button class="sell-limit"><span class="k">·</span> Place limit sell</button>
           </div>
           <div class="srow">
@@ -357,7 +368,8 @@
           </div>
           <div class="sells-all">sells <b class="all-qty">–</b></div>
           <div class="srow">
-            <input class="limit-px" type="number" step="0.001" min="0" placeholder="price" />
+            <input class="limit-px" type="number" step="0.1" min="0" max="99.9" placeholder="cents e.g. 88" />
+            <span class="limit-preview"></span>
             <button class="sell-limit"><span class="k">·</span> Place limit sell</button>
           </div>
           <div class="srow">
