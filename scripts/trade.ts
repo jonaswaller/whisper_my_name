@@ -241,10 +241,11 @@ async function main(): Promise<void> {
   console.log('\nsending in 3s — ctrl-C to abort...');
   await sleep(3000);
 
+  const endTakerPost = fills.beginTakerPost();
   const result = await dispatch(client as any, signed, isSell ? 'SELL' : 'BUY');
-  // Register before the fill can arrive, so a merge match is attributed to the
-  // token we actually traded rather than the counterparty's leg.
-  if (result.orderId) fills.expectOrder(result.orderId, tokenId);
+  // Register before releasing a websocket event that beat the POST response.
+  if (result.orderId) fills.expectOrder(result.orderId, tokenId, isSell ? 'SELL' : 'BUY');
+  endTakerPost();
   console.log(`\n  verdict:  ${result.verdict.toUpperCase()}`);
   console.log(`  order id: ${result.orderId ?? '(none)'}`);
   console.log(

@@ -59,6 +59,44 @@ const mergeMatch = {
   },
 };
 
+/**
+ * Reconstructed from the reported production incident and the SDK's normalized
+ * UserTradeEvent schema: our 606-share standing SELL is one maker leg inside a
+ * larger 1135-share taker BUY. Replace with the raw capture after the live run.
+ */
+const makerSellIncident = {
+  topic: 'user',
+  type: 'trade',
+  payload: {
+    id: 'maker-sell-incident',
+    side: 'BUY',
+    size: '1135',
+    price: '0.53',
+    status: 'TRADE_STATUS_MATCHED',
+    takerOrderId: '0xexternal-taker',
+    tokenId: TEAM_B,
+    traderSide: 'MAKER',
+    makerOrders: [
+      {
+        orderId: '0xour-standing-sell',
+        owner: 'our-owner',
+        price: '0.53',
+        side: 'SELL',
+        tokenId: TEAM_B,
+        matchedAmount: '606',
+      },
+      {
+        orderId: '0xanother-maker',
+        owner: 'another-owner',
+        price: '0.53',
+        side: 'SELL',
+        tokenId: TEAM_B,
+        matchedAmount: '529',
+      },
+    ],
+  },
+};
+
 function fakeClient(events: unknown[]) {
   return {
     async subscribe() {
@@ -78,14 +116,29 @@ async function run(
   name: string,
   events: unknown[],
   check: (fills: Fill[], feed: FillFeed) => void,
-  ourOrders: [string, string][] = [],
+  options: {
+    ourOrders?: [string, string, 'BUY' | 'SELL'][];
+    lateOrders?: [string, string, 'BUY' | 'SELL'][];
+    takerPostInFlight?: boolean;
+  } = {},
 ) {
-  const feed = new FillFeed(fakeClient(events) as any);
+  const feed = new FillFeed(fakeClient(events) as any, 40);
   feed.watch([TEAM_A, TEAM_B]);
-  for (const [orderId, tokenId] of ourOrders) feed.expectOrder(orderId, tokenId);
+  for (const [orderId, tokenId, side] of options.ourOrders ?? []) {
+    feed.expectOrder(orderId, tokenId, side);
+  }
   const fills: Fill[] = [];
   feed.on('fill', (f) => fills.push(f));
+  const endTakerPost = options.takerPostInFlight ? feed.beginTakerPost() : null;
   await feed.start();
+  if (options.lateOrders?.length) {
+    // Let the websocket event arrive before postOrder() returns its id.
+    await new Promise((r) => setTimeout(r, 20));
+    for (const [orderId, tokenId, side] of options.lateOrders) {
+      feed.expectOrder(orderId, tokenId, side);
+    }
+  }
+  endTakerPost?.();
   await new Promise((r) => setTimeout(r, 120));
   try {
     check(fills, feed);
@@ -133,7 +186,18 @@ await run(
     assert(f.tokenId === TEAM_B, `should attribute to our leg, got ${f.tokenId.slice(0, 8)}`);
     assert(f.price === 0.15, `expected 1-0.85=0.15, got ${f.price}`);
   },
-  [['0xmerge', TEAM_B]],
+  { ourOrders: [['0xmerge', TEAM_B, 'BUY']] },
+);
+
+await run(
+  'taker fill is replayed when websocket beats the POST response',
+  [{ ...mergeMatch, payload: { ...mergeMatch.payload, id: 'merge-race', traderSide: 'TAKER' } }],
+  (fills) => {
+    assert(fills.length === 1, `expected 1 replayed fill, got ${fills.length}`);
+    assert(fills[0]!.tokenId === TEAM_B, `wrong token ${fills[0]!.tokenId.slice(0, 8)}`);
+    assert(fills[0]!.price === 0.15, `expected inverted 0.15, got ${fills[0]!.price}`);
+  },
+  { lateOrders: [['0xmerge', TEAM_B, 'BUY']], takerPostInFlight: true },
 );
 
 // The same event WITHOUT the order record: no basis to invert, so take it at
@@ -142,6 +206,50 @@ await run('unknown order on a watched token is taken at face value', [mergeMatch
   assert(fills.length === 1, `expected 1 fill, got ${fills.length}`);
   assert(!fills[0]!.inverted, 'should not invert without an order record');
 });
+
+await run(
+  'external taker trade keeps the immediate face-value fallback',
+  [{ ...mergeMatch, payload: { ...mergeMatch.payload, id: 'external-taker', traderSide: 'TAKER' } }],
+  (fills) => {
+    assert(fills.length === 1, `expected 1 external fill, got ${fills.length}`);
+    assert(fills[0]!.tokenId === TEAM_A, `expected face-value token, got ${fills[0]!.tokenId.slice(0, 8)}`);
+    assert(fills[0]!.side === 'BUY', `expected BUY, got ${fills[0]!.side}`);
+  },
+);
+
+await run(
+  'unknown maker fill never applies the aggregate taker BUY',
+  [makerSellIncident],
+  (fills, feed) => {
+    assert(fills.length === 0, `expected no guessed fill, got ${fills.length}`);
+    assert(feed.position(TEAM_B).shares === 0, `position was corrupted to ${feed.position(TEAM_B).shares}`);
+  },
+);
+
+await run(
+  'maker SELL uses our matched leg, not the aggregate taker BUY',
+  [makerSellIncident],
+  (fills, feed) => {
+    assert(fills.length === 1, `expected 1 fill, got ${fills.length}`);
+    const f = fills[0]!;
+    assert(f.side === 'SELL', `expected SELL, got ${f.side}`);
+    assert(f.size === 606, `expected our 606 matched shares, got ${f.size}`);
+    assert(f.orderId === '0xour-standing-sell', `wrong order id ${f.orderId}`);
+    assert(feed.position(TEAM_B).shares === -606, `position moved by ${feed.position(TEAM_B).shares}`);
+  },
+  { ourOrders: [['0xour-standing-sell', TEAM_B, 'SELL']] },
+);
+
+await run(
+  'maker fill is replayed when websocket beats the POST response',
+  [makerSellIncident],
+  (fills) => {
+    assert(fills.length === 1, `expected 1 replayed fill, got ${fills.length}`);
+    assert(fills[0]!.side === 'SELL', `expected SELL, got ${fills[0]!.side}`);
+    assert(fills[0]!.size === 606, `expected 606, got ${fills[0]!.size}`);
+  },
+  { lateOrders: [['0xour-standing-sell', TEAM_B, 'SELL']] },
+);
 
 await run('unrelated market is ignored', [
   { topic: 'user', type: 'trade', payload: { ...captured('TRADE_STATUS_MATCHED').payload, tokenId: '999', makerOrders: [] } },

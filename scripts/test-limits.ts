@@ -7,7 +7,15 @@
  * visible rather than silent.
  */
 
-import { clampPrice, maxRestingPrice, minRestingPrice, normalizeOpenOrder, listOpenOrders } from '../src/agent/limitOrders.ts';
+import {
+  clampPrice,
+  maxRestingPrice,
+  minRestingPrice,
+  normalizeOpenOrder,
+  listOpenOrders,
+  sellableShares,
+  isInsufficientBalanceError,
+} from '../src/agent/limitOrders.ts';
 
 let failures = 0;
 function check(name: string, actual: unknown, expected: unknown) {
@@ -60,6 +68,18 @@ const parsed = normalizeOpenOrder({
 check('remaining = original - matched', parsed.remaining, 60);
 check('seconds timestamps become milliseconds', parsed.createdAt, 1785451435000);
 check('id/asset aliases resolve', [parsed.orderId, parsed.tokenId], ['0xabc', '123']);
+
+console.log('\nsell-all availability:\n');
+
+const resting = [
+  { tokenId: 'mine', side: 'SELL' as const, remaining: 40 },
+  { tokenId: 'mine', side: 'BUY' as const, remaining: 99 },
+  { tokenId: 'other', side: 'SELL' as const, remaining: 500 },
+];
+check('resting sells are subtracted from the held position', sellableShares(100, resting, 'mine'), 60);
+check('reserved shares can never make availability negative', sellableShares(20, resting, 'mine'), 0);
+check('balance rejection is recognized', isInsufficientBalanceError('not enough balance / allowance'), true);
+check('an unrelated rejection is not retried', isInsufficientBalanceError('invalid tick size'), false);
 
 console.log('\npaginated listOpenOrders:\n');
 

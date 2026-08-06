@@ -30,6 +30,8 @@ import {
   cancelAllOrders,
   maxRestingPrice,
   clampPrice,
+  sellableShares,
+  isInsufficientBalanceError,
   type OpenOrder,
 } from './limitOrders.ts';
 import { resolveEvent, defaultMarket, type ArmableMarket, type ResolvedEvent } from './market.ts';
@@ -104,6 +106,10 @@ export interface LogEntry {
  */
 const SELL_GUARD_MS = 2_000;
 
+/** Longer than FillFeed's 5s order-id race buffer and the observed API lag. */
+const POSITION_RECONCILE_MS = 6_500;
+const POSITION_RECONCILE_SAFE_AGE_MS = 7_000;
+
 /**
  * The only price the "sell at 99.9c" action will use. Never rounded down to
  * 0.99 — that is a different trade, and he wants it declined instead.
@@ -143,6 +149,10 @@ export class Session extends EventEmitter {
   /** All open positions account-wide, refreshed on a timer. */
   private inventory: (HeldPosition & { pnl: number })[] = [];
   private inventoryTimer: NodeJS.Timeout | null = null;
+  /** Do not let a transient websocket interpretation own sell sizing forever. */
+  private lastFillAt = new Map<string, number>();
+  private positionGeneration = new Map<string, number>();
+  private positionReconcileTimers = new Map<string, NodeJS.Timeout>();
   private watcher: ActivityWatcher;
 
   constructor(
@@ -172,11 +182,27 @@ export class Session extends EventEmitter {
     this.fills.on('error', (e) => this.push('warn', `fills: ${e.message}`));
     this.fills.on('status', () => this.emit('update'));
     this.fills.on('fill', (f: Fill) => {
+      this.markPositionActivity(f.tokenId);
+      this.schedulePositionReconcile(f.tokenId);
+      // A partial maker sell changes how many shares remain reserved. Refresh
+      // immediately so another sell-all does not subtract the stale full order.
+      if (f.side === 'SELL') void this.refreshOpenOrders();
       const which = f.tokenId === this.market?.teamA.tokenId ? 'A' : 'B';
       this.push(
         'fill',
         `${f.side} ${f.size} ${which} @ ${f.price}${f.inverted ? ' (inverted)' : ''}`,
       );
+    });
+    // A maker event can beat postOrder() and therefore arrive before its order
+    // id is known. FillFeed buffers it; REST reconciliation is the backstop for
+    // orders placed outside this app or an event that cannot be attributed.
+    this.fills.on('reconcile', (tokenId: string) => {
+      if (tokenId) {
+        // Prevent the periodic REST poll from seeding an absolute position
+        // while a buffered websocket delta is still waiting for its order id.
+        this.markPositionActivity(tokenId);
+        this.schedulePositionReconcile(tokenId);
+      }
     });
     this.fills.on('position', () => this.emit('update'));
     this.presign.on('ready', () => this.emit('update'));
@@ -301,10 +327,10 @@ export class Session extends EventEmitter {
     // while connected, so without this a sell hotkey thinks he is flat.
     try {
       const held = await fetchPositions(this.wallet);
-      for (const tokenId of tokens) {
-        const p = held.get(tokenId);
-        if (p) this.fills.seed(tokenId, p.shares, p.avgPrice);
-      }
+      for (const tokenId of tokens) this.seedPosition(held, tokenId);
+      // The Data API was observed lagging a fresh fill by >2.5s. Re-read after
+      // that window instead of letting an arm-time zero remain authoritative.
+      for (const tokenId of tokens) this.schedulePositionReconcile(tokenId);
     } catch (err: any) {
       this.push('warn', `position seed failed: ${err.message}`);
     }
@@ -317,6 +343,67 @@ export class Session extends EventEmitter {
     await this.presign.arm(this.presignTargets());
     this.push('info', 'all keys loaded');
     this.emit('update');
+  }
+
+  private seedPosition(held: Map<string, HeldPosition>, tokenId: string): void {
+    const p = held.get(tokenId);
+    this.fills.seed(tokenId, p?.shares ?? 0, p?.avgPrice ?? 0);
+  }
+
+  private markPositionActivity(tokenId: string): void {
+    this.lastFillAt.set(tokenId, Date.now());
+    this.positionGeneration.set(tokenId, (this.positionGeneration.get(tokenId) ?? 0) + 1);
+  }
+
+  /** Reconcile after the Data API's observed lag window, coalesced per token. */
+  private schedulePositionReconcile(tokenId: string): void {
+    const prior = this.positionReconcileTimers.get(tokenId);
+    if (prior) clearTimeout(prior);
+    const fillGeneration = this.positionGeneration.get(tokenId) ?? 0;
+    const timer = setTimeout(() => {
+      this.positionReconcileTimers.delete(tokenId);
+      void this.reconcilePosition(tokenId, fillGeneration).catch(() => {
+        /* periodic inventory refresh is the next retry */
+      });
+    }, POSITION_RECONCILE_MS);
+    timer.unref?.();
+    this.positionReconcileTimers.set(tokenId, timer);
+  }
+
+  private async reconcilePosition(tokenId: string, fillGeneration: number): Promise<number> {
+    const held = await fetchPositions(this.wallet);
+    // A newer websocket fill landed while this request was in flight. Its
+    // in-memory result is newer than this REST response; its own timer will
+    // reconcile later.
+    if ((this.positionGeneration.get(tokenId) ?? 0) !== fillGeneration) {
+      return this.fills.position(tokenId).shares;
+    }
+    this.seedPosition(held, tokenId);
+    return held.get(tokenId)?.shares ?? 0;
+  }
+
+  /**
+   * An insufficient-balance rejection means our fast local ledger or resting
+   * order snapshot is wrong. Re-read both authorities through the Data API's
+   * lag window, then let the caller retry once with the actual maximum.
+   */
+  private async recoverSellableShares(tokenId: string, attempted: number): Promise<number> {
+    let latest = 0;
+    for (const delay of [0, 400, 900, 1_600, 2_500]) {
+      if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+      await this.refreshOpenOrders();
+      try {
+        const fillGeneration = this.positionGeneration.get(tokenId) ?? 0;
+        const held = await fetchPositions(this.wallet);
+        if ((this.positionGeneration.get(tokenId) ?? 0) !== fillGeneration) continue;
+        this.seedPosition(held, tokenId);
+        latest = sellableShares(held.get(tokenId)?.shares ?? 0, this.openOrders, tokenId);
+        if (latest > 0 && Math.abs(latest - attempted) > 1e-6) return latest;
+      } catch {
+        /* try the next backoff step */
+      }
+    }
+    return latest;
   }
 
   private async waitForBook(tokens: string[], timeoutMs: number): Promise<void> {
@@ -370,13 +457,24 @@ export class Session extends EventEmitter {
       }
 
       const position = this.fills.position(outcome.tokenId);
-      if (position.shares <= 0) {
-        this.stamp(label, 'blocked', null, 'no position to sell');
-        this.push('warn', `no ${outcome.name} position to sell`);
+      const available = sellableShares(position.shares, this.openOrders, outcome.tokenId);
+      if (available <= 0) {
+        this.stamp(
+          label,
+          'blocked',
+          null,
+          position.shares > 0 ? 'all shares are already resting' : 'no position to sell',
+        );
+        this.push(
+          'warn',
+          position.shares > 0
+            ? `all ${position.shares} ${outcome.name} shares are already resting`
+            : `no ${outcome.name} position to sell`,
+        );
         return null;
       }
       const plan = planSell({
-        shares: position.shares,
+        shares: available,
         bestBid: top.bid,
         slippageCents: this.config.sellSlippageCents,
         tickSize: this.tickFor(outcome.tokenId),
@@ -394,13 +492,50 @@ export class Session extends EventEmitter {
           minPrice: plan.minPrice,
           orderType: OrderType.FAK,
         });
-        return await this.send(
+        const result = await this.send(
           order,
           'SELL',
           outcome.tokenId,
           `SELL ${plan.shares} ${outcome.name} floor ${plan.minPrice}`,
           started,
         );
+        if (
+          result?.verdict === 'rejected' &&
+          isInsufficientBalanceError(result.error)
+        ) {
+          const recovered = await this.recoverSellableShares(outcome.tokenId, plan.shares);
+          if (
+            recovered >= market.minOrderSize &&
+            Math.abs(recovered - plan.shares) > 1e-6
+          ) {
+            this.push(
+              'warn',
+              `sellable balance is ${recovered}, not ${plan.shares} — retrying SELL ALL once`,
+            );
+            const retryPlan = planSell({
+              shares: recovered,
+              bestBid: top.bid,
+              slippageCents: this.config.sellSlippageCents,
+              tickSize: this.tickFor(outcome.tokenId),
+              minOrderSize: market.minOrderSize,
+            });
+            const retryOrder = await this.client.createMarketOrder({
+              tokenId: outcome.tokenId,
+              side: OrderSide.SELL,
+              shares: retryPlan.shares,
+              minPrice: retryPlan.minPrice,
+              orderType: OrderType.FAK,
+            });
+            return await this.send(
+              retryOrder,
+              'SELL',
+              outcome.tokenId,
+              `SELL ${retryPlan.shares} ${outcome.name} floor ${retryPlan.minPrice}`,
+              Date.now(),
+            );
+          }
+        }
+        return result;
       } finally {
         // Hold the guard past the POST until the fill has had time to land and
         // move the position. Releasing at POST-time would reopen the same race.
@@ -517,6 +652,27 @@ export class Session extends EventEmitter {
     describe: string,
   ): Promise<void> {
     const market = this.market;
+    if (!market) return this.placeStandingSellUnchecked(side, price, describe);
+    const tokenId = (side === 'A' ? market.teamA : market.teamB).tokenId;
+    if (this.sellInFlight.has(tokenId)) {
+      this.stamp(`LIMIT SELL ${side}`, 'blocked', null, 'a sell is already in flight');
+      this.push('warn', `sell already in flight for ${side} — ignored`);
+      return;
+    }
+    this.sellInFlight.add(tokenId);
+    try {
+      await this.placeStandingSellUnchecked(side, price, describe);
+    } finally {
+      this.sellInFlight.delete(tokenId);
+    }
+  }
+
+  private async placeStandingSellUnchecked(
+    side: 'A' | 'B',
+    price: number,
+    describe: string,
+  ): Promise<void> {
+    const market = this.market;
     if (!market) {
       this.stamp(`LIMIT SELL ${side}`, 'blocked', null, 'no market armed');
       this.push('warn', 'no market armed');
@@ -530,7 +686,7 @@ export class Session extends EventEmitter {
     const alreadyResting = this.openOrders
       .filter((o) => o.tokenId === outcome.tokenId && o.side === 'SELL')
       .reduce((sum, o) => sum + o.remaining, 0);
-    const available = Number((position.shares - alreadyResting).toFixed(6));
+    let available = sellableShares(position.shares, this.openOrders, outcome.tokenId);
 
     if (available <= 0) {
       this.stamp(
@@ -555,15 +711,38 @@ export class Session extends EventEmitter {
       return;
     }
 
-    const started = Date.now();
-    const result = await placeLimitSell(this.client, {
+    let started = Date.now();
+    let result = await placeLimitSell(this.client, {
       tokenId: outcome.tokenId,
       shares: available,
       price,
       tickSize: this.tickFor(outcome.tokenId),
       minOrderSize: market.minOrderSize,
     });
-    const elapsed = Date.now() - started;
+    let elapsed = Date.now() - started;
+
+    if (!result.ok && isInsufficientBalanceError(result.error)) {
+      const recovered = await this.recoverSellableShares(outcome.tokenId, available);
+      if (
+        recovered >= market.minOrderSize &&
+        Math.abs(recovered - available) > 1e-6
+      ) {
+        this.push(
+          'warn',
+          `sellable balance is ${recovered}, not ${available} — retrying LIMIT SELL once`,
+        );
+        available = recovered;
+        started = Date.now();
+        result = await placeLimitSell(this.client, {
+          tokenId: outcome.tokenId,
+          shares: available,
+          price,
+          tickSize: this.tickFor(outcome.tokenId),
+          minOrderSize: market.minOrderSize,
+        });
+        elapsed = Date.now() - started;
+      }
+    }
 
     if (!result.ok) {
       this.stamp(`LIMIT SELL ${side}`, 'blocked', elapsed, result.error);
@@ -575,7 +754,7 @@ export class Session extends EventEmitter {
         `standing SELL ${result.shares} ${outcome.name} @ ${result.price} resting` +
           `${result.adjusted ? ` (${result.adjusted})` : ''}  ${elapsed}ms`,
       );
-      if (result.orderId) this.fills.expectOrder(result.orderId, outcome.tokenId);
+      if (result.orderId) this.fills.expectOrder(result.orderId, outcome.tokenId, 'SELL');
     }
     await this.refreshOpenOrders();
   }
@@ -614,6 +793,17 @@ export class Session extends EventEmitter {
         const mark = top?.bid ?? p.curPrice;
         return { ...p, pnl: Number((p.shares * (mark - p.avgPrice)).toFixed(2)) };
       });
+      // The websocket ledger is the low-latency path; the Data API is the
+      // authority once its lag window has passed. This repairs any missed or
+      // unattributable fill instead of leaving every future sell poisoned.
+      if (this.market) {
+        for (const tokenId of [this.market.teamA.tokenId, this.market.teamB.tokenId]) {
+          const lastFill = this.lastFillAt.get(tokenId) ?? 0;
+          if (Date.now() - lastFill >= POSITION_RECONCILE_SAFE_AGE_MS) {
+            this.seedPosition(held, tokenId);
+          }
+        }
+      }
       this.emit('update');
     } catch {
       /* transient; the next tick retries */
@@ -633,6 +823,14 @@ export class Session extends EventEmitter {
   async refreshOpenOrders(): Promise<void> {
     try {
       this.openOrders = await listOpenOrders(this.client);
+      // Orders can survive an app restart or be placed from Polymarket's UI.
+      // Register the authoritative list so their later maker fills use the
+      // maker leg too, not the aggregate taker trade.
+      for (const order of this.openOrders) {
+        if (order.orderId && order.tokenId) {
+          this.fills.expectOrder(order.orderId, order.tokenId, order.side);
+        }
+      }
       this.emit('update');
     } catch (err: any) {
       this.push('warn', `open orders: ${err.message}`);
@@ -651,10 +849,16 @@ export class Session extends EventEmitter {
       this.push('info', `DRY RUN: ${describe}`);
       return null;
     }
-    const result = await dispatch(this.client, order, side);
-    // Register before the fill can land, so a merge match is attributed to the
-    // token we traded rather than the counterparty's leg.
-    if (result.orderId) this.fills.expectOrder(result.orderId, tokenId);
+    const endTakerPost = this.fills.beginTakerPost();
+    let result: ExecutionResult;
+    try {
+      result = await dispatch(this.client, order, side);
+      // Register before releasing buffered taker events, so a merge match is
+      // attributed to the token and side we actually sent.
+      if (result.orderId) this.fills.expectOrder(result.orderId, tokenId, side);
+    } finally {
+      endTakerPost();
+    }
 
     const total = Date.now() - startedAt;
     if (result.verdict === 'rejected') {
@@ -763,6 +967,8 @@ export class Session extends EventEmitter {
     this.openOrdersTimer = null;
     if (this.inventoryTimer) clearInterval(this.inventoryTimer);
     this.inventoryTimer = null;
+    for (const timer of this.positionReconcileTimers.values()) clearTimeout(timer);
+    this.positionReconcileTimers.clear();
     this.watcher.stop();
     this.presign.close();
     this.book.close();

@@ -49,6 +49,27 @@ export interface LimitResult {
   raw?: unknown;
 }
 
+/**
+ * Shares that can be offered without colliding with an existing resting sell.
+ * The venue reserves those shares, so sending the account's full position
+ * again is rejected as insufficient balance even though the shares are held.
+ */
+export function sellableShares(
+  positionShares: number,
+  openOrders: Pick<OpenOrder, 'tokenId' | 'side' | 'remaining'>[],
+  tokenId: string,
+): number {
+  const resting = openOrders
+    .filter((o) => o.tokenId === tokenId && o.side === 'SELL')
+    .reduce((sum, o) => sum + o.remaining, 0);
+  return Math.max(0, Number((positionShares - resting).toFixed(6)));
+}
+
+/** Error text observed across SDK and CLOB insufficient-balance responses. */
+export function isInsufficientBalanceError(error: unknown): boolean {
+  return /insufficient|not enough|balance|allowance/i.test(String(error ?? ''));
+}
+
 interface LimitClient {
   createLimitOrder(request: Record<string, unknown>): Promise<any>;
   postOrder(order: any): Promise<any>;

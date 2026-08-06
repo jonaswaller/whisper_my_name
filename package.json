@@ -8,7 +8,7 @@
     "build": "node build.mjs",
     "start": "npm run build && electron .",
     "typecheck": "tsc --noEmit",
-    "test": "tsx scripts/test-fills.ts && tsx scripts/test-presign.ts && tsx scripts/test-limits.ts && tsx scripts/test-config.ts",
+    "test": "tsx scripts/test-fills.ts && tsx scripts/test-presign.ts && tsx scripts/test-limits.ts && tsx scripts/test-config.ts && tsx scripts/test-session.ts",
     "resolve": "tsx scripts/resolve.ts",
     "trade": "tsx scripts/trade.ts",
     "verify-auth": "tsx scripts/verify-auth.ts"
