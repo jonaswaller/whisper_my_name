@@ -80,6 +80,10 @@ let registered: { label: string; accelerator: string; ok: boolean }[] = [];
 let hotkeysSuspended = false;
 
 function setHotkeysSuspended(suspended: boolean): void {
+  // Focus can report the same state more than once (pointerdown + focus, or a
+  // window-focus reconciliation). Re-registering on every duplicate `false`
+  // emits another key-status update and used to churn the renderer mid-edit.
+  if (hotkeysSuspended === suspended) return;
   hotkeysSuspended = suspended;
   if (suspended) globalShortcut.unregisterAll();
   else registerHotkeys();

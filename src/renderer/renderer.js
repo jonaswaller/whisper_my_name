@@ -62,7 +62,7 @@ function buildRows(side) {
       <div class="key">${escapeHtml(keyFor(`buy${side}${i + 1}`))}</div>
       <button class="buy" data-side="${side}" data-tier="${i}">
         <div class="lbl">${tier.label}</div>
-        BUY $${tier.notional} · ${tier.slippageCents}c
+        <span class="buy-summary">BUY $${tier.notional} · ${tier.slippageCents}c</span>
       </button>
       <input class="size" type="number" min="1" step="1" value="${tier.notional}" data-tier="${i}" data-side="${side}" title="order size in dollars for this side only" />
       <input class="slip" type="number" min="0" max="99" step="1" value="${tier.slippageCents}" data-tier="${i}" data-side="${side}" title="slippage tolerance in cents for this side only" />
@@ -80,6 +80,28 @@ function buildRows(side) {
   host.querySelectorAll('input').forEach((input) => {
     input.addEventListener('change', pushConfig);
     guardInput(input);
+  });
+}
+
+/**
+ * Refresh tier labels without replacing any controls.
+ *
+ * Rebuilding `.rows` here used to destroy whichever amount field had just
+ * gained focus. That was especially easy to hit because resuming global
+ * hotkeys emits a key-status update, which calls this path while focus is
+ * moving between fields.
+ */
+function paintTierRows(side) {
+  const root = $(`#side-${side}`);
+  (config?.tiers?.[side] ?? []).forEach((tier, i) => {
+    const btn = $(`.buy[data-side="${side}"][data-tier="${i}"]`, root);
+    const row = btn?.closest('.row');
+    const key = row ? $('.key', row) : null;
+    const label = btn ? $('.lbl', btn) : null;
+    const summary = btn ? $('.buy-summary', btn) : null;
+    if (key) key.textContent = keyFor(`buy${side}${i + 1}`);
+    if (label) label.textContent = tier.label;
+    if (summary) summary.textContent = `BUY $${tier.notional} · ${tier.slippageCents}c`;
   });
 }
 
@@ -109,7 +131,9 @@ async function pushConfig(event) {
     return;
   }
   config = res.config;
-  ['A', 'B'].forEach(buildRows);
+  // Preserve the live DOM nodes: the trader may already be typing in another
+  // field by the time this async save returns.
+  ['A', 'B'].forEach(paintTierRows);
 }
 
 function renderSide(side, view) {
@@ -207,11 +231,51 @@ function renderPing(a) {
  * ever sees them — which is why editing a value sometimes appeared to do
  * nothing.
  */
+let editingField = false;
+let capturingHotkey = false;
+let requestedHotkeySuspension = false;
+let suspensionQueue = Promise.resolve();
+
+/** Serialize renderer -> main suspension changes so a fast blur/focus pair
+ * cannot arrive out of order and accidentally leave live hotkeys enabled. */
+function syncHotkeySuspension() {
+  const suspended = editingField || capturingHotkey;
+  if (suspended === requestedHotkeySuspension) return;
+  requestedHotkeySuspension = suspended;
+  suspensionQueue = suspensionQueue
+    .then(() => api.suspendHotkeys(suspended))
+    .catch((err) => log('error', `could not ${suspended ? 'pause' : 'resume'} hotkeys: ${err?.message ?? err}`));
+}
+
+function setEditingField(editing) {
+  editingField = editing;
+  syncHotkeySuspension();
+}
+
+function reconcileEditingField() {
+  const active = document.activeElement;
+  setEditingField(
+    document.hasFocus() && active instanceof Element && active.matches('[data-hotkey-guarded="true"]'),
+  );
+}
+
 function guardInput(input) {
-  input.addEventListener('focus', () => api.suspendHotkeys(true));
-  input.addEventListener('blur', () => api.suspendHotkeys(false));
+  input.dataset.hotkeyGuarded = 'true';
+  // pointerdown covers returning from the fullscreen game by clicking the same
+  // field: Chromium may retain activeElement and therefore emit no new focus.
+  input.addEventListener('pointerdown', () => setEditingField(true));
+  input.addEventListener('focus', () => setEditingField(true));
+  // Defer until the complete focus transition has finished. Resuming on the
+  // blur of field A before field B receives focus caused unregister/register
+  // churn in the middle of a direct field-to-field click.
+  input.addEventListener('blur', () => setTimeout(reconcileEditingField, 0));
   input.addEventListener('keydown', (e) => e.stopPropagation());
 }
+
+// Leaving the HUD means he is back in the fullscreen game and needs his global
+// trading keys. On return, pointerdown/focus re-suspends them before typing.
+window.addEventListener('blur', () => setEditingField(false));
+window.addEventListener('focus', () => setTimeout(reconcileEditingField, 0));
 
 /** Resting orders — money committed on the book that he must be able to see. */
 function renderOrders(orders, maxResting) {
@@ -428,7 +492,8 @@ function renderBinder() {
 function startCapture(actionId, button) {
   if (capturingFor) return;
   capturingFor = actionId;
-  api.suspendHotkeys(true);
+  capturingHotkey = true;
+  syncHotkeySuspension();
   button.classList.add('capturing');
   button.textContent = 'press a key…';
 
@@ -448,7 +513,8 @@ function startCapture(actionId, button) {
     window.removeEventListener('keydown', onKey, true);
     button.classList.remove('capturing');
     capturingFor = null;
-    api.suspendHotkeys(false);
+    capturingHotkey = false;
+    syncHotkeySuspension();
 
     if (!cancelled) {
       const res = await api.setBinding(actionId, accel);
@@ -593,7 +659,7 @@ function paintKeys() {
   });
   const ca = $('#cancel-all .k');
   if (ca) ca.textContent = keyFor('cancelAll');
-  if (config) ['A', 'B'].forEach(buildRows); // buy rows carry their own keys
+  if (config) ['A', 'B'].forEach(paintTierRows);
 }
 
 api.onHotkeys((list) => {
