@@ -16,6 +16,8 @@ export type ActionId =
   | 'sellAskA' | 'sellAskB'
   | 'sellMaxA' | 'sellMaxB'
   | 'sellLimitA' | 'sellLimitB'
+  | 'sellBelowBidA' | 'sellBelowBidB'
+  | 'buyBidA' | 'buyBidB'
   | 'cancelAll'
   | 'nextMarket';
 
@@ -57,6 +59,21 @@ export const ACTIONS: ActionSpec[] = [
     hint: 'uses the price in B’s box',
   },
 
+  {
+    id: 'sellBelowBidA',
+    label: 'Sell A below BID',
+    group: 'Standing (limit)',
+    hint: 'whole position, 1c under the bid — fills what it can, the rest rests',
+  },
+  {
+    id: 'sellBelowBidB',
+    label: 'Sell B below BID',
+    group: 'Standing (limit)',
+    hint: 'whole position, 1c under the bid — fills what it can, the rest rests',
+  },
+  { id: 'buyBidA', label: 'Buy A at BID (resting)', group: 'Standing (limit)', hint: 'fixed $ amount, joins the bid queue' },
+  { id: 'buyBidB', label: 'Buy B at BID (resting)', group: 'Standing (limit)', hint: 'fixed $ amount, joins the bid queue' },
+
   { id: 'cancelAll', label: 'Cancel all resting orders', group: 'Other' },
   { id: 'nextMarket', label: 'Next market (Game 1 → 2)', group: 'Other' },
 ];
@@ -85,6 +102,15 @@ export const NUMPAD_BINDINGS: Bindings = {
   // numenter"), so that action would never bind. Shift+. keeps B on the same
   // physical key as A. Verified to register.
   sellLimitB: 'Shift+numdec',
+  // The bare numpad is full. Ctrl + the key he already uses for the FAK
+  // version gives the resting version of the same trade: Ctrl+7/8 = sell A/B
+  // under the bid, Ctrl+1/4 = buy A/B at the bid. Ctrl is used rather than
+  // Shift because Windows treats Shift+numpad-digit as a temporary Num Lock
+  // toggle and sends the navigation key instead (see NUMLOCK_OFF_ALIASES).
+  sellBelowBidA: 'Control+num7',
+  sellBelowBidB: 'Control+num8',
+  buyBidA: 'Control+num1',
+  buyBidB: 'Control+num4',
 };
 
 /**
@@ -123,6 +149,10 @@ export const MAC_BINDINGS: Bindings = {
   sellMaxB: 'CommandOrControl+Alt+M',
   sellLimitA: 'CommandOrControl+Alt+U',
   sellLimitB: 'CommandOrControl+Alt+I',
+  sellBelowBidA: 'CommandOrControl+Alt+H',
+  sellBelowBidB: 'CommandOrControl+Alt+L',
+  buyBidA: 'CommandOrControl+Alt+Y',
+  buyBidB: 'CommandOrControl+Alt+O',
 };
 
 /** Short display label — the numpad key, without modifier noise. */

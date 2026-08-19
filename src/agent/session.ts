@@ -25,6 +25,7 @@ import { ActivityWatcher, type WatchedTrade } from './watcher.ts';
 import { planBuy, planSell, isUnfillable } from './sizing.ts';
 import {
   placeLimitSell,
+  placeLimitBuy,
   listOpenOrders,
   cancelOrder,
   cancelAllOrders,
@@ -591,9 +592,11 @@ export class Session extends EventEmitter {
   // --- standing (GTC) sell orders ------------------------------------------
   //
   // These REST on the book until filled or cancelled, unlike every other order
-  // this app sends. He gets three ways to price one: an exact price he types,
-  // the current ask (capturing the spread instead of crossing it), and the
-  // highest price the market allows (a near-resolution exit).
+  // this app sends. He gets four ways to price a sell: an exact price he types,
+  // the current ask (capturing the spread instead of crossing it), a little
+  // under the bid (takes what is there, rests the remainder), and the highest
+  // price the market allows (a near-resolution exit). Plus one standing buy,
+  // resting at the bid.
 
   /** Sell the whole position at an exact price he chose. */
   async sellLimitAt(side: 'A' | 'B', price: number): Promise<void> {
@@ -644,6 +647,102 @@ export class Session extends EventEmitter {
       return;
     }
     return this.placeStandingSell(side, TARGET_MAX_PRICE, 'at 0.999');
+  }
+
+  /**
+   * Sell the whole position a little UNDER the bid, as a standing order.
+   *
+   * Priced through the bid it crosses immediately: whatever the bid side can
+   * absorb fills at once (at the bid — the venue price-improves), and the
+   * remainder stays on the book at bid minus the offset instead of being
+   * killed. That is the difference from SELL ALL NOW, which is FAK.
+   *
+   * The offset is literal cents (config.sellBelowBidCents), rounded to the tick.
+   */
+  async sellBelowBid(side: 'A' | 'B'): Promise<void> {
+    const market = this.market;
+    if (!market) {
+      this.stamp(`SELL ${side} < BID`, 'blocked', null, 'no market armed');
+      this.push('warn', 'no market armed');
+      return;
+    }
+    const outcome = side === 'A' ? market.teamA : market.teamB;
+    const top = this.book.top(outcome.tokenId);
+    if (!top) {
+      this.stamp(`SELL ${side} < BID`, 'blocked', null, 'no book');
+      this.push('error', `no book for ${outcome.name}`);
+      return;
+    }
+    const offset = this.config.sellBelowBidCents / 100;
+    const price = Number((top.bid - offset).toFixed(4));
+    return this.placeStandingSell(side, price, `${this.config.sellBelowBidCents}c under the bid (${top.bid})`);
+  }
+
+  /**
+   * Rest a fixed-dollar BUY at the current bid.
+   *
+   * Joins the bid queue as a maker rather than lifting the offer: it only fills
+   * if someone sells into it, and it is exempt from the venue's ~250ms
+   * marketable hold. Sized in shares from config.limitBuyNotional at the bid.
+   *
+   * Not double-press guarded, same as the FAK buys — stacking a second clip is
+   * legitimate, and Cancel all covers a mistake.
+   */
+  async buyAtBid(side: 'A' | 'B'): Promise<void> {
+    const label = `LIMIT BUY ${side} @ BID`;
+    const market = this.market;
+    if (!market) {
+      this.stamp(label, 'blocked', null, 'no market armed');
+      this.push('warn', 'no market armed');
+      return;
+    }
+    const outcome = side === 'A' ? market.teamA : market.teamB;
+    const top = this.book.top(outcome.tokenId);
+    if (!top) {
+      this.stamp(label, 'blocked', null, 'no book');
+      this.push('error', `no book for ${outcome.name} — refusing to trade blind`);
+      return;
+    }
+
+    const notional = this.config.limitBuyNotional;
+    if (!(notional > 0) || notional > this.config.maxNotionalPerOrder) {
+      const detail = `$${notional} is outside the 0–${this.config.maxNotionalPerOrder} cap`;
+      this.stamp(label, 'blocked', null, detail);
+      this.push('error', `limit buy refused: ${detail}`);
+      return;
+    }
+
+    const tick = this.tickFor(outcome.tokenId);
+    const preview = clampPrice(top.bid, tick);
+    if (this.config.dryRun) {
+      this.stamp(`LIMIT BUY ${side} @ ${preview.price}`, 'dry', null);
+      this.push('info', `DRY RUN: standing BUY $${notional} ${outcome.name} at the bid -> ${preview.price}`);
+      return;
+    }
+
+    const started = Date.now();
+    const result = await placeLimitBuy(this.client, {
+      tokenId: outcome.tokenId,
+      notional,
+      price: top.bid,
+      tickSize: tick,
+      minOrderSize: market.minOrderSize,
+    });
+    const elapsed = Date.now() - started;
+
+    if (!result.ok) {
+      this.stamp(label, 'blocked', elapsed, result.error);
+      this.push('error', `standing BUY $${notional} ${outcome.name} at the bid rejected: ${result.error}`);
+    } else {
+      this.stamp(`LIMIT BUY ${side} @ ${result.price}`, 'sent', elapsed);
+      this.push(
+        'fill',
+        `standing BUY ${result.shares} ${outcome.name} @ ${result.price} ($${notional}) resting` +
+          `${result.adjusted ? ` (${result.adjusted})` : ''}  ${elapsed}ms`,
+      );
+      if (result.orderId) this.fills.expectOrder(result.orderId, outcome.tokenId, 'BUY');
+    }
+    await this.refreshOpenOrders();
   }
 
   private async placeStandingSell(

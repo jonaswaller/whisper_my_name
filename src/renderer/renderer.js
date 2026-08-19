@@ -25,9 +25,14 @@ function keyLabel(accel) {
   // them as "div", "mult", "sub" — meaningless on a keycap.
   const SYMBOL = { numdiv: '/', nummult: '*', numsub: '-', numadd: '+', numdec: '.' };
   const base = SYMBOL[last.toLowerCase()] ?? last.replace(/^num/i, '');
-  // Keep Shift visible: Shift+. is a different key from . and must look it.
-  const shifted = parts.some((p) => p.toLowerCase() === 'shift');
-  return (shifted ? '⇧' : '') + (base || '·');
+  // Keep Shift and a bare Control visible: Shift+. is a different key from .,
+  // and Ctrl+7 (sell under the bid) must not look like 7 (sell now).
+  // CommandOrControl is deliberately NOT shown — the Mac dev map puts it on
+  // every key, where it is noise rather than a distinction.
+  const mods = parts.slice(0, -1).map((p) => p.toLowerCase());
+  const shifted = mods.includes('shift');
+  const ctrl = mods.includes('control') || mods.includes('ctrl');
+  return (ctrl ? '^' : '') + (shifted ? '⇧' : '') + (base || '·');
 }
 
 const keyFor = (label) => keyLabel(hotkeys[label]);
@@ -349,14 +354,54 @@ function renderSellBlock(side, view, openOrders) {
 
   $('.ask-px', root).textContent = view.ask === null ? '–' : fmt(view.ask, 3);
 
+  // Standing sell under the bid: show the price it would rest at, from the
+  // same arithmetic the agent uses (cents under the bid, 3dp display).
+  const cents = config?.sellBelowBidCents ?? 0;
+  $('.below-cents', root).textContent = String(cents);
+  $('.below-px', root).textContent =
+    view.bid === null ? '–' : fmt(Math.max(0, view.bid - cents / 100), 3);
+
   // Grey the whole block out when there is nothing it could sell.
   const disabled = available <= 0;
-  ['.sell-limit', '.sell-ask', '.sell-max'].forEach((sel) => {
+  ['.sell-limit', '.sell-ask', '.sell-max', '.sell-below-bid'].forEach((sel) => {
     const b = $(sel, root);
     if (b) b.disabled = disabled;
   });
   $('.standing', root).style.opacity = disabled ? '0.5' : '1';
   $('.sell', root).disabled = view.shares <= 0;
+
+  // Resting buy works when flat — it only needs a book.
+  $('.buy-bid-amt', root).textContent = config ? String(config.limitBuyNotional) : '–';
+  $('.bid-px', root).textContent = view.bid === null ? '–' : fmt(view.bid, 3);
+  $('.buy-bid', root).disabled = view.bid === null;
+}
+
+/**
+ * Push the two standing-order amounts (resting buy $, cents under bid) back to
+ * the agent. Both sides show the same value; whichever box he edits wins.
+ */
+async function pushStandingConfig(field, input) {
+  if (!config) return;
+  const value = Number(input.value);
+  const res = await api.updateConfig({ ...config, [field]: value });
+  if (!res.ok) {
+    log('error', res.error);
+    paintStandingInputs(); // put the accepted value back
+    return;
+  }
+  config = res.config;
+  paintStandingInputs();
+}
+
+/** Mirror config into every standing-order input that is not being typed in. */
+function paintStandingInputs() {
+  if (!config) return;
+  document.querySelectorAll('.buy-bid-size').forEach((el) => {
+    if (document.activeElement !== el) el.value = String(config.limitBuyNotional);
+  });
+  document.querySelectorAll('.below-bid-cents').forEach((el) => {
+    if (document.activeElement !== el) el.value = String(config.sellBelowBidCents);
+  });
 }
 
 function render(snap) {
@@ -603,6 +648,15 @@ $('#dry').addEventListener('click', async () => {
   $('.sell', root).addEventListener('click', () => api.runAction(`sell${side}`));
   $('.sell-ask', root).addEventListener('click', () => api.runAction(`sellAsk${side}`));
   $('.sell-max', root).addEventListener('click', () => api.runAction(`sellMax${side}`));
+  $('.sell-below-bid', root).addEventListener('click', () => api.runAction(`sellBelowBid${side}`));
+  $('.buy-bid', root).addEventListener('click', () => api.runAction(`buyBid${side}`));
+
+  const buySize = $('.buy-bid-size', root);
+  buySize.addEventListener('change', () => pushStandingConfig('limitBuyNotional', buySize));
+  guardInput(buySize);
+  const belowCents = $('.below-bid-cents', root);
+  belowCents.addEventListener('change', () => pushStandingConfig('sellBelowBidCents', belowCents));
+  guardInput(belowCents);
 
   const px = $('.limit-px', root);
   $('.sell-limit', root).addEventListener('click', () => api.runAction(`sellLimit${side}`));
@@ -628,6 +682,7 @@ $('#cancel-all').addEventListener('click', async () => {
 api.onReady((info) => {
   config = info.config;
   ['A', 'B'].forEach(buildRows);
+  paintStandingInputs();
   log('info', `wallet ${info.wallet.slice(0, 10)}… (type ${info.walletType})`);
   if (info.config.lastEventUrl) $('#url').value = info.config.lastEventUrl;
 });
@@ -656,6 +711,9 @@ function paintKeys() {
     set('.sell-ask', `sellAsk${side}`);
     set('.sell-max', `sellMax${side}`);
     set('.sell-limit', `sellLimit${side}`);
+    set('.sell-below-bid', `sellBelowBid${side}`);
+    const bk = $('.buy-bid-key', root);
+    if (bk) bk.textContent = keyFor(`buyBid${side}`);
   });
   const ca = $('#cancel-all .k');
   if (ca) ca.textContent = keyFor('cancelAll');
@@ -677,6 +735,8 @@ const FLASH_SELECTOR = {
   sellAskA: '#side-A .sell-ask', sellAskB: '#side-B .sell-ask',
   sellMaxA: '#side-A .sell-max', sellMaxB: '#side-B .sell-max',
   sellLimitA: '#side-A .sell-limit', sellLimitB: '#side-B .sell-limit',
+  sellBelowBidA: '#side-A .sell-below-bid', sellBelowBidB: '#side-B .sell-below-bid',
+  buyBidA: '#side-A .buy-bid', buyBidB: '#side-B .buy-bid',
   cancelAll: '#cancel-all',
 };
 api.onPressed((id) => {

@@ -137,9 +137,37 @@ the stream is fullscreen — you don't need to click the window first.
 Every key is also a button on screen — click them instead while you're learning.
 Identical behaviour.
 
-> **Num Lock:** the app registers both the numpad digits and the keys Windows
-> sends when Num Lock is off, so it works either way. If a key ever does nothing,
-> check Num Lock anyway and tell Stu.
+> **Num Lock must be ON.** With it off, Windows turns the numpad into arrow
+> keys and the hotkeys do nothing (on purpose — otherwise your arrow keys would
+> place orders). If a key ever does nothing, check Num Lock first.
+
+### Resting (limit) orders
+
+These sit on the book until they fill or you cancel them — unlike the keys
+above, which take whatever is there right now and drop the rest.
+
+```
+   /   *      sell A / sell B at the ASK          (waits for someone to lift it)
+   -   +      sell A / sell B at 99.9c            (only on markets that allow it)
+   .   ⇧.     sell A / sell B at the price you typed in the box
+   0          cancel every resting order
+
+  Ctrl+7  Ctrl+8    sell ALL of A / B 1c UNDER the bid — takes what the bid
+                    can absorb right now, the rest stays on the book
+  Ctrl+1  Ctrl+4    put a $200 BUY of A / B ON the bid — joins the queue,
+                    fills only if someone sells into it
+```
+
+Hold **Ctrl** and press the same key you'd use for the instant version:
+Ctrl+7 is the resting cousin of 7, Ctrl+1 of 1.
+
+The **$200** and the **1c** are boxes on screen — change them any time, same as
+the sizes. The resting buy is one amount for both teams.
+
+Anything resting shows in the **resting orders** list at the bottom, with a
+cancel button per order. **0** cancels everything.
+
+Every key can be rebound: click **Keys** at the top.
 
 ### Changing your sizes
 

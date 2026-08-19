@@ -5,8 +5,8 @@
  * to carry bindings back, every rebind made since launch is silently reverted —
  * which is exactly what happened: changing a size reset the hotkeys.
  */
-import { loadConfig, saveConfig, DEFAULT_CONFIG, validateTier } from '../src/agent/config.ts';
-import { validateAccelerator } from '../src/agent/actions.ts';
+import { loadConfig, saveConfig, DEFAULT_CONFIG, validateTier, validateStanding } from '../src/agent/config.ts';
+import { validateAccelerator, ACTIONS, NUMPAD_BINDINGS, MAC_BINDINGS, findConflict } from '../src/agent/actions.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -75,6 +75,39 @@ saveConfig({ ...structuredClone(DEFAULT_CONFIG), tiers: [
 const oldTiers = loadConfig(dir);
 check('legacy shared tiers copy to both sides', [oldTiers.tiers.A[0].notional, oldTiers.tiers.B[0].notional], [7, 7]);
 check('legacy slippage survives too', oldTiers.tiers.B[2].slippageCents, 3);
+
+// --- the resting hotkeys' config ---------------------------------------------
+console.log('\nstanding-order config:\n');
+
+// A config.local.json written before these fields existed must boot with the
+// documented defaults, and the new actions must arrive with a key.
+{
+  const { limitBuyNotional: _a, sellBelowBidCents: _b, ...older } = structuredClone(DEFAULT_CONFIG) as any;
+  older.bindings = { ...older.bindings };
+  delete older.bindings.sellBelowBidA;
+  delete older.bindings.buyBidA;
+  saveConfig(older, dir);
+  const upgraded = loadConfig(dir);
+  check('old config gets the $200 resting-buy default', upgraded.limitBuyNotional, 200);
+  check('old config gets the 1c under-bid default', upgraded.sellBelowBidCents, 1);
+  check('old config gets keys for the new actions', [Boolean(upgraded.bindings.sellBelowBidA), Boolean(upgraded.bindings.buyBidA)], [true, true]);
+}
+
+// Every action has a default on both platforms and no two share a key — a
+// duplicate would double-register and Electron silently gives the key to
+// whichever registered first.
+for (const [name, map] of [['numpad', NUMPAD_BINDINGS], ['mac', MAC_BINDINGS]] as const) {
+  check(`${name} defaults bind every action`, ACTIONS.filter((a) => !map[a.id]).map((a) => a.id), []);
+  const dupes = ACTIONS.filter((a) => findConflict(map, map[a.id]!, a.id)).map((a) => a.id);
+  check(`${name} defaults have no duplicate keys`, dupes, []);
+  check(`${name} defaults all pass accelerator validation`, ACTIONS.filter((a) => validateAccelerator(map[a.id]!)).map((a) => a.id), []);
+}
+
+check('standing: sane values pass', validateStanding({ limitBuyNotional: 200, sellBelowBidCents: 1, maxNotionalPerOrder: 5000 }), null);
+check('standing: resting buy above the cap is refused', validateStanding({ limitBuyNotional: 6000, sellBelowBidCents: 1, maxNotionalPerOrder: 5000 }) !== null, true);
+check('standing: zero resting buy is refused', validateStanding({ limitBuyNotional: 0, sellBelowBidCents: 1, maxNotionalPerOrder: 5000 }) !== null, true);
+check('standing: negative under-bid offset is refused', validateStanding({ limitBuyNotional: 200, sellBelowBidCents: -1, maxNotionalPerOrder: 5000 }) !== null, true);
+check('standing: zero under-bid offset (sell AT the bid) is allowed', validateStanding({ limitBuyNotional: 200, sellBelowBidCents: 0, maxNotionalPerOrder: 5000 }), null);
 
 rmSync(dir, { recursive: true, force: true });
 console.log(failures ? `\n${failures} FAILURES\n` : '\nall passed\n');

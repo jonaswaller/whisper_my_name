@@ -148,12 +148,71 @@ export async function placeLimitSell(
     };
   }
 
+  return submitLimit(client, OrderSide.SELL, req.tokenId, price, req.shares, adjusted);
+}
+
+export interface LimitBuyRequest {
+  tokenId: string;
+  /** Dollars to commit. Converted to shares at `price` — the venue sizes limit orders in shares. */
+  notional: number;
+  price: number;
+  tickSize: number;
+  minOrderSize: number;
+}
+
+/**
+ * Shares a dollar amount buys at a resting price.
+ *
+ * Limit orders are sized in SHARES on both sides (unlike a market buy, which
+ * takes dollars). Rounded DOWN to the venue's 0.01-share precision so the order
+ * never commits more than the dollars he typed.
+ */
+export function limitBuyShares(notional: number, price: number): number {
+  if (!(price > 0) || !(notional > 0)) return 0;
+  return Math.floor((notional / price) * 100 + 1e-9) / 100;
+}
+
+/**
+ * Place a GTC buy that rests until filled or cancelled.
+ *
+ * Priced at the bid it joins the queue as a maker; priced at or above the ask
+ * it crosses and fills like a taker, with any remainder left resting.
+ */
+export async function placeLimitBuy(
+  client: LimitClient,
+  req: LimitBuyRequest,
+): Promise<LimitResult> {
+  const { price, adjusted } = clampPrice(req.price, req.tickSize);
+  const shares = limitBuyShares(req.notional, price);
+
+  if (shares < req.minOrderSize) {
+    return {
+      ok: false,
+      orderId: null,
+      price,
+      shares,
+      error: `$${req.notional} at ${price} is ${shares} shares — below the venue minimum of ${req.minOrderSize}`,
+    };
+  }
+
+  return submitLimit(client, OrderSide.BUY, req.tokenId, price, shares, adjusted);
+}
+
+/** Sign and post one GTC limit order; both sides share this so they cannot drift. */
+async function submitLimit(
+  client: LimitClient,
+  side: OrderSide,
+  tokenId: string,
+  price: number,
+  shares: number,
+  adjusted: string | undefined,
+): Promise<LimitResult> {
   try {
     const signed = await client.createLimitOrder({
-      tokenId: req.tokenId,
-      side: OrderSide.SELL,
+      tokenId,
+      side,
       price,
-      size: req.shares,
+      size: shares,
     });
     const response = await client.postOrder(signed);
 
@@ -163,7 +222,7 @@ export async function placeLimitSell(
         ok: false,
         orderId: null,
         price,
-        shares: req.shares,
+        shares,
         error: String(errorMsg ?? 'rejected'),
         adjusted,
         raw: response,
@@ -174,7 +233,7 @@ export async function placeLimitSell(
       ok: true,
       orderId: response?.orderId ?? response?.orderID ?? response?.id ?? null,
       price,
-      shares: req.shares,
+      shares,
       adjusted,
       raw: response,
     };
@@ -183,7 +242,7 @@ export async function placeLimitSell(
       ok: false,
       orderId: null,
       price,
-      shares: req.shares,
+      shares,
       error: err?.message ?? String(err),
       adjusted,
     };

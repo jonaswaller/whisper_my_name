@@ -71,10 +71,17 @@ keypress. Changing a size re-signs that tier immediately.
 Defaults are per-platform (`src/agent/config.ts`), overridable in
 `config.local.json`:
 
-- **Windows** — numpad `1`–`9`. Each is registered together with its
-  Num-Lock-off twin (`num7`/`Home`, `num1`/`End`, …), so the keys work whether
-  Num Lock is on or off. Without that, Num Lock off silently kills every hotkey.
-- **macOS** — `Cmd+Alt+1` … `Cmd+Alt+9`, since laptops have no numpad.
+- **Windows** — the full numpad. Digits `1`–`9` and `0` as drawn above plus
+  cancel-all; `/ * - + . Shift+.` carry the standing sells (at ask, at 99.9c,
+  at typed price); `Ctrl+7/8` sell all under the bid and `Ctrl+1/4` rest a
+  fixed-dollar buy at the bid. **Num Lock must be on** — Num-Lock-off twins are
+  deliberately not registered (see `NUMLOCK_OFF_ALIASES`), because Windows
+  sends the same virtual key for the real arrow/Home/Delete keys.
+- **macOS** — `Cmd+Alt+<digit|letter>` chords, since laptops have no numpad.
+
+Every action is rebindable from the **Keys** panel; bindings live in
+`config.local.json` and new actions inherit a default without disturbing
+existing rebinds.
 
 Hotkeys are global: they fire while a stream is fullscreen. They're handled in
 Electron's main process, so a press reaches the POST without an IPC hop or
@@ -93,6 +100,25 @@ npm test                            # replay tests, no network, no money
 stops. `--amount` overrides the tier so a real test can be a few dollars.
 
 ---
+
+### Standing (GTC) orders
+
+Everything in the numpad diagram is FAK. Six further actions rest on the book
+until filled or cancelled:
+
+| action | price | size |
+|---|---|---|
+| sell at typed price / at ASK / at 99.9c | as named | whole unreserved position |
+| **sell under BID** (`Ctrl+7/8`) | bid − `sellBelowBidCents` (default 1c, tick-rounded) | whole unreserved position |
+| **buy at BID** (`Ctrl+1/4`) | current bid | `limitBuyNotional` dollars (default $200) converted to shares at that price, floored to 0.01 sh |
+
+"Sell under bid" is a *marketable* limit: it crosses, fills whatever the bid
+side can absorb at the bid, and leaves the remainder resting at bid − 1c rather
+than killing it — that is the whole difference from `7`/`8`. "Buy at bid" joins
+the bid queue as a maker (exempt from the venue's ~250ms hold) and only fills
+if someone sells into it. Both amounts are editable in the HUD and persist in
+`config.local.json`; the resting buy is capped by `maxNotionalPerOrder` like
+every other buy.
 
 ## How it works
 

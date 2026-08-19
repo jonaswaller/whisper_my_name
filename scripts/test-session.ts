@@ -25,10 +25,12 @@ function check(name: string, actual: unknown, expected: unknown): void {
 function clientWithResponses(responses: any[]) {
   const marketShares: number[] = [];
   const limitShares: number[] = [];
+  const limitReqs: any[] = [];
   let posts = 0;
   const client = {
     marketShares,
     limitShares,
+    limitReqs,
     get posts() { return posts; },
     async createMarketOrder(req: any) {
       marketShares.push(req.shares);
@@ -36,6 +38,7 @@ function clientWithResponses(responses: any[]) {
     },
     async createLimitOrder(req: any) {
       limitShares.push(req.size);
+      limitReqs.push(req);
       return { kind: 'limit', req };
     },
     async postOrder() {
@@ -143,6 +146,109 @@ console.log('\nsession sell safety:\n');
   await session.sellLimitAt('A', 0.8);
   check('standing sell retries at authoritative maximum', client.limitShares, [1_782, 647]);
   check('standing sell retry posts exactly twice', client.posts, 2);
+  session.close();
+}
+
+// --- the two resting hotkeys ------------------------------------------------
+
+console.log('\nstanding sell under the bid / standing buy at the bid:\n');
+
+// "69 bid / 70 ask -> sell everything at 68": bid here is 0.50, so 0.49, and it
+// goes through the same reservation-aware path as the other standing sells.
+{
+  const client = clientWithResponses([{ success: true, orderId: '0xbelow' }]);
+  const session = makeSession(client, 100, 40);
+  await session.sellBelowBid('A');
+  const req = client.limitReqs[0];
+  check('sell under bid prices 1c below the bid', req?.price, 0.49);
+  check('sell under bid is a SELL of the unreserved shares', { side: String(req?.side), size: req?.size }, { side: 'SELL', size: 60 });
+  check('sell under bid posts once', client.posts, 1);
+  session.close();
+}
+
+// The offset is his to edit; 3c under a 0.50 bid is 0.47.
+{
+  const client = clientWithResponses([{ success: true, orderId: '0xbelow3' }]);
+  const session = makeSession(client, 100);
+  (session as any).config.sellBelowBidCents = 3;
+  await session.sellBelowBid('A');
+  check('sell under bid honours the configured offset', client.limitReqs[0]?.price, 0.47);
+  session.close();
+}
+
+// A second press while the first is still in flight must not offer the shares twice.
+{
+  const client = clientWithResponses([{ success: true, orderId: '0xbelow' }]);
+  const session = makeSession(client, 100);
+  await Promise.all([session.sellBelowBid('A'), session.sellBelowBid('A')]);
+  check('sell under bid is double-press guarded', client.posts, 1);
+  session.close();
+}
+
+// Flat: nothing to sell, nothing sent, but the press is still stamped.
+{
+  const client = clientWithResponses([{ success: true }]);
+  const session = makeSession(client, 0);
+  await session.sellBelowBid('A');
+  check('sell under bid with no position sends nothing', client.posts, 0);
+  check('sell under bid with no position stamps why', session.snapshot().lastAction?.detail, 'no position');
+  session.close();
+}
+
+// "$200 on the 69c bid": here bid 0.50 -> 400 shares, BUY side, resting.
+{
+  const client = clientWithResponses([{ success: true, orderId: '0xbidbuy' }]);
+  const session = makeSession(client, 0);
+  await session.buyAtBid('A');
+  const req = client.limitReqs[0];
+  check('buy at bid is a BUY at the bid price', { side: String(req?.side), price: req?.price }, { side: 'BUY', price: 0.5 });
+  check('buy at bid converts $200 into shares at the bid', req?.size, 400);
+  check('buy at bid stamps as sent', session.snapshot().lastAction?.outcome, 'sent');
+  session.close();
+}
+
+// Size is config, subject to the same hard cap as every other buy.
+{
+  const client = clientWithResponses([{ success: true, orderId: '0xbidbuy' }]);
+  const session = makeSession(client, 0);
+  (session as any).config.limitBuyNotional = 50;
+  await session.buyAtBid('B');
+  check('buy at bid uses the configured dollar size', client.limitReqs[0]?.size, 100);
+  check('buy at bid targets the side pressed', client.limitReqs[0]?.tokenId, TOKEN_B);
+  session.close();
+}
+{
+  const client = clientWithResponses([{ success: true, orderId: '0xbidbuy' }]);
+  const session = makeSession(client, 0);
+  (session as any).config.limitBuyNotional = 9_999;
+  await session.buyAtBid('A');
+  check('buy at bid above maxNotionalPerOrder sends nothing', client.posts, 0);
+  check('buy at bid above cap stamps blocked', session.snapshot().lastAction?.outcome, 'blocked');
+  session.close();
+}
+
+// Dry run: lights up, sends nothing.
+{
+  const client = clientWithResponses([{ success: true, orderId: '0xbidbuy' }]);
+  const session = makeSession(client, 100);
+  (session as any).config.dryRun = true;
+  await session.buyAtBid('A');
+  await session.sellBelowBid('A');
+  check('dry run sends neither resting order', client.posts, 0);
+  check('dry run still stamps', session.snapshot().lastAction?.outcome, 'dry');
+  session.close();
+}
+
+// No book: refuse to trade blind, same as the FAK keys.
+{
+  const client = clientWithResponses([{ success: true }]);
+  const session = makeSession(client, 100);
+  (session as any).book.top = () => null;
+  await session.buyAtBid('A');
+  check('buy at bid with no book sends nothing', client.posts, 0);
+  await session.sellBelowBid('A');
+  check('sell under bid with no book sends nothing', client.posts, 0);
+  check('no-book refusal is stamped', session.snapshot().lastAction?.detail, 'no book');
   session.close();
 }
 

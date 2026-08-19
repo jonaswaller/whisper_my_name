@@ -15,6 +15,8 @@ import {
   listOpenOrders,
   sellableShares,
   isInsufficientBalanceError,
+  limitBuyShares,
+  placeLimitBuy,
 } from '../src/agent/limitOrders.ts';
 
 let failures = 0;
@@ -131,6 +133,38 @@ check(
   (await listOpenOrders({ listOpenOrders: () => [row('z')] } as any)).map((o) => o.orderId),
   ['z'],
 );
+
+console.log('\nresting buy sizing:\n');
+
+// His example: $200 on a 69c bid. Limit orders are sized in shares, floored to
+// the venue's 0.01-share precision so the order never commits more than $200.
+check('$200 at 0.69 is 289.85 shares', limitBuyShares(200, 0.69), 289.85);
+check('$200 at 0.50 is exactly 400 shares', limitBuyShares(200, 0.5), 400);
+check('$3 at 0.07 floors, not rounds', limitBuyShares(3, 0.07), 42.85);
+check('float noise does not lose a cent: $1 at 0.1', limitBuyShares(1, 0.1), 10);
+check('zero price is zero shares', limitBuyShares(200, 0), 0);
+check('zero notional is zero shares', limitBuyShares(0, 0.5), 0);
+
+{
+  // A fake client that records what would be signed.
+  const reqs: any[] = [];
+  const client: any = {
+    async createLimitOrder(req: any) { reqs.push(req); return { signed: req }; },
+    async postOrder() { return { success: true, orderId: '0xbuy' }; },
+    async cancelOrder() {}, async cancelAll() {}, listOpenOrders() { return []; },
+  };
+  const res = await placeLimitBuy(client, { tokenId: 't', notional: 200, price: 0.69, tickSize: 0.01, minOrderSize: 5 });
+  check('limit buy posts BUY side, shares not dollars', { side: reqs[0].side, size: reqs[0].size, price: reqs[0].price }, { side: 'BUY', size: 289.85, price: 0.69 });
+  check('limit buy reports the order id', { ok: res.ok, orderId: res.orderId, shares: res.shares }, { ok: true, orderId: '0xbuy', shares: 289.85 });
+
+  const tiny = await placeLimitBuy(client, { tokenId: 't', notional: 2, price: 0.69, tickSize: 0.01, minOrderSize: 5 });
+  check('limit buy below venue minimum is refused before signing', { ok: tiny.ok, posts: reqs.length }, { ok: false, posts: 1 });
+  check('limit buy min-size refusal says why', /below the venue minimum/.test(tiny.error ?? ''), true);
+
+  // Off-tick bid (e.g. a 0.001 quote on a market we think is 0.01) rounds down and says so.
+  const rounded = await placeLimitBuy(client, { tokenId: 't', notional: 200, price: 0.695, tickSize: 0.01, minOrderSize: 5 });
+  check('limit buy snaps an off-tick price and reports it', { price: rounded.price, adjusted: rounded.adjusted }, { price: 0.69, adjusted: 'rounded to the 0.01 tick' });
+}
 
 console.log(failures ? `\n${failures} FAILURES\n` : '\nall passed\n');
 process.exit(failures ? 1 : 0);

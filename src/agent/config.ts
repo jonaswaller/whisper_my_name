@@ -41,6 +41,17 @@ export interface TradingConfig {
   tiers: SideTiers;
   /** Tolerance applied to sell hotkeys 7 and 8. */
   sellSlippageCents: number;
+  /**
+   * Dollars for the resting "buy at BID" key. One amount for both sides: he
+   * asked for a fixed clip ($200), not a tier ladder.
+   */
+  limitBuyNotional: number;
+  /**
+   * How far under the bid the "sell below BID" key prices its standing sell.
+   * Literal cents, so on a 0.001 market 1c is ten ticks — that is what he
+   * asked for; tighten it here if the market is fine enough to want one tick.
+   */
+  sellBelowBidCents: number;
   /** Refuse to send a buy larger than this, whatever the HUD says. */
   maxNotionalPerOrder: number;
   /** Book older than this disables the unfillable veto (fails open). */
@@ -73,6 +84,8 @@ export const DEFAULT_CONFIG: TradingConfig = {
     ],
   },
   sellSlippageCents: 5,
+  limitBuyNotional: 200,
+  sellBelowBidCents: 1,
   // A backstop against a fat-fingered edit in the HUD, not a trading limit.
   maxNotionalPerOrder: 5000,
   bookFreshMs: 1000,
@@ -162,5 +175,17 @@ export function validateTier(tier: Tier, maxNotional: number): string | null {
     return 'slippage must be zero or more';
   }
   if (tier.slippageCents > 99) return 'slippage cannot exceed 99c';
+  return null;
+}
+
+/** Validate the standing-order amounts the HUD can edit. */
+export function validateStanding(
+  config: Pick<TradingConfig, 'limitBuyNotional' | 'sellBelowBidCents' | 'maxNotionalPerOrder'>,
+): string | null {
+  const { limitBuyNotional: notional, sellBelowBidCents: cents, maxNotionalPerOrder: max } = config;
+  if (!Number.isFinite(notional) || notional <= 0) return 'limit buy size must be a positive number';
+  if (notional > max) return `limit buy size exceeds the ${max} cap`;
+  if (!Number.isFinite(cents) || cents < 0) return 'below-bid offset must be zero or more';
+  if (cents > 99) return 'below-bid offset cannot exceed 99c';
   return null;
 }

@@ -61,7 +61,7 @@ src/agent/
   executor.ts     POST a signed order, interpret the response
   fills.ts        user-channel fills, price-inversion fix, position tracking
   positions.ts    account-wide positions from the Data API
-  limitOrders.ts  GTC standing sells, cancel, list open orders
+  limitOrders.ts  GTC standing sells AND buys, cancel, list open orders
   warmth.ts       keeps the HTTP connection hot
   watcher.ts      polls another trader's activity
   session.ts      orchestration — everything a keypress touches
@@ -173,7 +173,7 @@ twice. Buys are deliberately *not* guarded — repeating a buy is legitimate.
 a confirmed fill returns 0. Poll for it; do not read once.
 
 **Every action must stamp `session.stamp()`** — including paths that bail out
-before any network call. There are 18 stamp points. "Nothing appeared to happen"
+before any network call. There are ~29 stamp points (grep `this.stamp(`). "Nothing appeared to happen"
 is exactly when the user needs to see why, and a stale latency reading
 masquerading as current was a real complaint.
 
@@ -204,6 +204,19 @@ FAK buys, market sells, GTC standing sells at typed price / at ask / at 99.9c,
 cancel and cancel-all, open-orders panel, per-side independent sizes, full
 rebinding UI, account-wide inventory, and a watcher on another trader's fills.
 
+Added 2026-08-19, unit-tested and HUD-smoke-tested but **not yet placed live**:
+`sellBelowBid` (whole position at bid − `sellBelowBidCents`, default 1c,
+marketable GTC — fills what the bid absorbs, rests the rest) and `buyAtBid`
+(`limitBuyNotional` dollars, default $200, as a resting BUY at the bid, sized
+in shares floored to 0.01). Defaults `Ctrl+num7/8` and `Ctrl+num1/4` — Ctrl,
+not Shift, because Windows treats Shift+numpad-digit as a Num Lock override.
+All 20 default accelerators were registered in real Electron on 2026-08-19.
+Decisions taken without client confirmation, easy to flip: the buy rests AT
+the bid (his example said 69c on a 69/70 market; his heading said "ask");
+"1 cent" is literal cents, not one tick; the resting buy is unguarded against
+double-press like the FAK buys. `placeLimitBuy` shares `submitLimit()` with
+`placeLimitSell`, so the POST/response handling cannot drift between sides.
+
 Not yet done:
 
 1. **Position refresh retry** for the Data API lag — arming right after a fill
@@ -214,7 +227,10 @@ Not yet done:
    with backoff and a visible reconnect path. **This is the highest-value
    remaining fix** — he trades behind a VPN.
 3. No live order has been placed through the **HUD** — only the CLI. The
-   Electron path shares the code but is unproven end to end.
+   Electron path shares the code but is unproven end to end. The two resting
+   hotkeys have not been placed live from anywhere yet — first live test should
+   be a small `buyAtBid` on the cheap side priced well under the market so it
+   rests, confirm it in the open-orders panel, then cancel.
 4. Nobody has tested the **actual numpad on Windows hardware**. Registration is
    verified; the physical keys are not.
 

@@ -14,7 +14,7 @@ import { privateKey } from '@polymarket/client/viem';
 
 import { loadDotEnv, loadCredentials } from '../agent/env.ts';
 import { Session, type Action } from '../agent/session.ts';
-import { loadConfig, saveConfig, validateTier, type TradingConfig } from '../agent/config.ts';
+import { loadConfig, saveConfig, validateTier, validateStanding, type TradingConfig } from '../agent/config.ts';
 import {
   ACTIONS,
   NUMLOCK_OFF_ALIASES,
@@ -124,6 +124,10 @@ async function runAction(id: ActionId): Promise<void> {
       case 'sellAskB': return void (await session.sellAtAsk('B'));
       case 'sellMaxA': return void (await session.sellAtMax('A'));
       case 'sellMaxB': return void (await session.sellAtMax('B'));
+      case 'sellBelowBidA': return void (await session.sellBelowBid('A'));
+      case 'sellBelowBidB': return void (await session.sellBelowBid('B'));
+      case 'buyBidA': return void (await session.buyAtBid('A'));
+      case 'buyBidB': return void (await session.buyAtBid('B'));
       // The typed price lives in the renderer, so ask for it rather than
       // duplicating that state in the main process.
       case 'sellLimitA':
@@ -238,6 +242,13 @@ ipcMain.handle('update-config', async (_e, next: TradingConfig) => {
       if (problem) return { ok: false, error: `${side}: ${problem}` };
     }
   }
+
+  const standingProblem = validateStanding({
+    limitBuyNotional: next.limitBuyNotional ?? config.limitBuyNotional,
+    sellBelowBidCents: next.sellBelowBidCents ?? config.sellBelowBidCents,
+    maxNotionalPerOrder: next.maxNotionalPerOrder ?? config.maxNotionalPerOrder,
+  });
+  if (standingProblem) return { ok: false, error: standingProblem };
 
   // Bindings are owned HERE and changed only through 'set-binding'. The
   // renderer holds a config snapshot taken at startup, so accepting its
