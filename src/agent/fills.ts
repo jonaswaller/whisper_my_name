@@ -34,6 +34,13 @@ export interface Fill {
   /** True when the raw price was quoted from the counterparty's side. */
   inverted: boolean;
   receivedAt: number;
+  /**
+   * Milliseconds from the keypress that placed the order to this confirmation
+   * arriving — the "signal to fill" he actually cares about. Null when the fill
+   * cannot be attributed to a press of ours (an order placed from the web UI,
+   * or an event taken at face value without an order record).
+   */
+  sincePressMs: number | null;
 }
 
 export interface Position {
@@ -54,6 +61,8 @@ interface SubscribingClient {
 interface ExpectedOrder {
   tokenId: string;
   side: 'BUY' | 'SELL';
+  /** When the key was pressed, so the fill event can report press-to-fill. */
+  pressedAt?: number;
 }
 
 function num(value: unknown): number {
@@ -114,9 +123,9 @@ export class FillFeed extends EventEmitter {
    * token even when the venue keys the trade on the complementary one.
    * Call this as soon as a POST returns an order id.
    */
-  expectOrder(orderId: string, tokenId: string, side: 'BUY' | 'SELL'): void {
+  expectOrder(orderId: string, tokenId: string, side: 'BUY' | 'SELL', pressedAt?: number): void {
     if (!orderId) return;
-    this.ourOrders.set(orderId, { tokenId, side });
+    this.ourOrders.set(orderId, { tokenId, side, pressedAt });
     if (this.ourOrders.size > 500) {
       this.ourOrders = new Map([...this.ourOrders].slice(-250));
     }
@@ -271,6 +280,7 @@ export class FillFeed extends EventEmitter {
           side: expected.side,
           inverted,
           receivedAt: Date.now(),
+          sincePressMs: expected.pressedAt ? Date.now() - expected.pressedAt : null,
         });
       }
       return;
@@ -312,12 +322,14 @@ export class FillFeed extends EventEmitter {
     let ourToken: string;
     let inverted: boolean;
     let side: 'BUY' | 'SELL';
+    let sincePressMs: number | null = null;
 
     if (expectedTaker) {
       // Authoritative: we sent this order and know its token.
       ourToken = expectedTaker.tokenId;
       side = expectedTaker.side;
       inverted = expectedTaker.tokenId !== eventToken;
+      if (expectedTaker.pressedAt) sincePressMs = Date.now() - expectedTaker.pressedAt;
     } else if (this.watched.has(eventToken)) {
       // A fill we did not originate (placed from the web UI, say). Take the
       // event at face value — with no order of ours to compare against there is
@@ -350,6 +362,7 @@ export class FillFeed extends EventEmitter {
       side,
       inverted,
       receivedAt: Date.now(),
+      sincePressMs,
     });
   }
 

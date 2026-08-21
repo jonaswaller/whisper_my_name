@@ -211,6 +211,19 @@ marketable GTC — fills what the bid absorbs, rests the rest) and `buyAtBid`
 in shares floored to 0.01). Defaults `Ctrl+num7/8` and `Ctrl+num1/4` — Ctrl,
 not Shift, because Windows treats Shift+numpad-digit as a Num Lock override.
 All 20 default accelerators were registered in real Electron on 2026-08-19.
+
+Timing display (added 2026-08-21, after "my standing sell had 2000 ping"):
+every order-outcome line ends with a trailing `NNNms`; a standing order's total
+of 1s+ decomposes into `(sign X + post Y)` because signing is an inline network
+round trip on that path (~334ms warm / ~1,886ms cold — no presign cache for
+limit orders) and a cold draw otherwise reads as venue slowness. His 2000ms was
+a cold sign, not the venue. Fill echoes from the user websocket now carry
+`press→fill NNNms`: `expectOrder()` takes the keypress timestamp and
+`Fill.sincePressMs` is the delta, null for fills we did not originate — never
+guessed. The log paints any 1500ms+ duration red (`paintDurations`), the same
+threshold as the ping bar. For FAK orders the POST total already IS
+signal-to-fill (the venue decides fill-or-kill synchronously); press→fill on
+the echo adds the ~0.65s p50 websocket propagation on top.
 Decisions taken without client confirmation, easy to flip: the buy rests AT
 the bid (his example said 69c on a 69/70 market; his heading said "ask");
 "1 cent" is literal cents, not one tick; the resting buy is unguarded against

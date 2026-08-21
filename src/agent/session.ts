@@ -117,6 +117,27 @@ const POSITION_RECONCILE_SAFE_AGE_MS = 7_000;
  */
 const TARGET_MAX_PRICE = 0.999;
 
+/**
+ * Elapsed label for a standing order. A slow one decomposes into its two
+ * phases, because they are different problems: `sign` is the SDK's signing
+ * endpoint (a network round trip, ~334ms warm / ~1,886ms cold — standing
+ * orders have no presign cache), `post` is the venue. Without the split, a
+ * cold signature reads as "the venue took 2 seconds", which is what actually
+ * scared him.
+ */
+function elapsedLabel(totalMs: number, signMs?: number, postMs?: number): string {
+  const slow = totalMs >= 1_000 && signMs !== undefined && postMs !== undefined;
+  return slow ? `${totalMs}ms (sign ${signMs} + post ${postMs})` : `${totalMs}ms`;
+}
+
+/** Press-to-fill duration: ms under 10s, then seconds/minutes. */
+function sinceLabel(ms: number): string {
+  if (ms < 10_000) return `${ms}ms`;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`;
+}
+
 const EMPTY_SIDE: SideView = {
   name: '—',
   tokenId: '',
@@ -189,9 +210,12 @@ export class Session extends EventEmitter {
       // immediately so another sell-all does not subtract the stale full order.
       if (f.side === 'SELL') void this.refreshOpenOrders();
       const which = f.tokenId === this.market?.teamA.tokenId ? 'A' : 'B';
+      // press->fill is the "signal to fill" number he asked for: keypress to
+      // this confirmation arriving. Absent on fills we did not originate.
       this.push(
         'fill',
-        `${f.side} ${f.size} ${which} @ ${f.price}${f.inverted ? ' (inverted)' : ''}`,
+        `${f.side} ${f.size} ${which} @ ${f.price}${f.inverted ? ' (inverted)' : ''}` +
+          `${f.sincePressMs !== null ? `  press→fill ${sinceLabel(f.sincePressMs)}` : ''}`,
       );
     });
     // A maker event can beat postOrder() and therefore arrive before its order
@@ -732,15 +756,18 @@ export class Session extends EventEmitter {
 
     if (!result.ok) {
       this.stamp(label, 'blocked', elapsed, result.error);
-      this.push('error', `standing BUY $${notional} ${outcome.name} at the bid rejected: ${result.error}`);
+      this.push(
+        'error',
+        `standing BUY $${notional} ${outcome.name} at the bid rejected: ${result.error}  ${elapsedLabel(elapsed, result.signMs, result.postMs)}`,
+      );
     } else {
       this.stamp(`LIMIT BUY ${side} @ ${result.price}`, 'sent', elapsed);
       this.push(
         'fill',
         `standing BUY ${result.shares} ${outcome.name} @ ${result.price} ($${notional}) resting` +
-          `${result.adjusted ? ` (${result.adjusted})` : ''}  ${elapsed}ms`,
+          `${result.adjusted ? ` (${result.adjusted})` : ''}  ${elapsedLabel(elapsed, result.signMs, result.postMs)}`,
       );
-      if (result.orderId) this.fills.expectOrder(result.orderId, outcome.tokenId, 'BUY');
+      if (result.orderId) this.fills.expectOrder(result.orderId, outcome.tokenId, 'BUY', started);
     }
     await this.refreshOpenOrders();
   }
@@ -810,7 +837,8 @@ export class Session extends EventEmitter {
       return;
     }
 
-    let started = Date.now();
+    const pressedAt = Date.now();
+    let started = pressedAt;
     let result = await placeLimitSell(this.client, {
       tokenId: outcome.tokenId,
       shares: available,
@@ -845,15 +873,18 @@ export class Session extends EventEmitter {
 
     if (!result.ok) {
       this.stamp(`LIMIT SELL ${side}`, 'blocked', elapsed, result.error);
-      this.push('error', `standing SELL ${describe} rejected: ${result.error}`);
+      this.push(
+        'error',
+        `standing SELL ${describe} rejected: ${result.error}  ${elapsedLabel(elapsed, result.signMs, result.postMs)}`,
+      );
     } else {
       this.stamp(`LIMIT SELL ${side} @ ${result.price}`, 'sent', elapsed);
       this.push(
         'fill',
         `standing SELL ${result.shares} ${outcome.name} @ ${result.price} resting` +
-          `${result.adjusted ? ` (${result.adjusted})` : ''}  ${elapsed}ms`,
+          `${result.adjusted ? ` (${result.adjusted})` : ''}  ${elapsedLabel(elapsed, result.signMs, result.postMs)}`,
       );
-      if (result.orderId) this.fills.expectOrder(result.orderId, outcome.tokenId, 'SELL');
+      if (result.orderId) this.fills.expectOrder(result.orderId, outcome.tokenId, 'SELL', pressedAt);
     }
     await this.refreshOpenOrders();
   }
@@ -954,7 +985,7 @@ export class Session extends EventEmitter {
       result = await dispatch(this.client, order, side);
       // Register before releasing buffered taker events, so a merge match is
       // attributed to the token and side we actually sent.
-      if (result.orderId) this.fills.expectOrder(result.orderId, tokenId, side);
+      if (result.orderId) this.fills.expectOrder(result.orderId, tokenId, side, startedAt);
     } finally {
       endTakerPost();
     }
@@ -970,7 +1001,7 @@ export class Session extends EventEmitter {
       this.stamp(describe, 'sent', total);
       this.push(
         'fill',
-        `${describe} -> ${result.filledShares} sh @ ${result.avgPrice} in ${total}ms`,
+        `${describe} -> ${result.filledShares} sh @ ${result.avgPrice}  ${total}ms`,
       );
     }
     this.emit('update');

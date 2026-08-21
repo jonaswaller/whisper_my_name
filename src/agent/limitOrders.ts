@@ -46,6 +46,15 @@ export interface LimitResult {
   error?: string;
   /** Set when the requested price had to be adjusted to be legal. */
   adjusted?: string;
+  /**
+   * Signing time in ms. Signing a limit order is a NETWORK round trip
+   * (~334ms warm, ~1,886ms cold measured) done inline on every standing order
+   * — there is no presign cache for these — so it, not the venue, is what a
+   * scary total usually consists of. Reported so the UI can say which.
+   */
+  signMs?: number;
+  /** POST round trip in ms. */
+  postMs?: number;
   raw?: unknown;
 }
 
@@ -207,14 +216,23 @@ async function submitLimit(
   shares: number,
   adjusted: string | undefined,
 ): Promise<LimitResult> {
+  // Timed separately because they are different problems: a slow sign is our
+  // SDK's signing endpoint (or a cold token), a slow post is the venue.
+  let signMs: number | undefined;
+  let postMs: number | undefined;
   try {
+    const signStarted = Date.now();
     const signed = await client.createLimitOrder({
       tokenId,
       side,
       price,
       size: shares,
     });
+    signMs = Date.now() - signStarted;
+
+    const postStarted = Date.now();
     const response = await client.postOrder(signed);
+    postMs = Date.now() - postStarted;
 
     const errorMsg = response?.errorMsg || response?.error_msg || response?.error;
     if (response?.success === false || errorMsg) {
@@ -225,6 +243,8 @@ async function submitLimit(
         shares,
         error: String(errorMsg ?? 'rejected'),
         adjusted,
+        signMs,
+        postMs,
         raw: response,
       };
     }
@@ -235,6 +255,8 @@ async function submitLimit(
       price,
       shares,
       adjusted,
+      signMs,
+      postMs,
       raw: response,
     };
   } catch (err: any) {
@@ -245,6 +267,8 @@ async function submitLimit(
       shares,
       error: err?.message ?? String(err),
       adjusted,
+      signMs,
+      postMs,
     };
   }
 }

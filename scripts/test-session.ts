@@ -252,6 +252,47 @@ console.log('\nstanding sell under the bid / standing buy at the bid:\n');
   session.close();
 }
 
+// --- press-to-fill wiring -----------------------------------------------------
+// Every order path must record WHEN the key was pressed alongside its order id,
+// or the fill event cannot report signal-to-fill.
+
+console.log('\npress time recorded with every order:\n');
+
+{
+  const t0 = Date.now();
+  // Distinct order ids per response, and the standing sell goes on B — the
+  // market sell arms A's 2s double-press guard, which would block it on A.
+  const client = clientWithResponses([
+    acceptedSell(100),
+    { success: true, orderId: '0xlimB' },
+    { success: true, orderId: '0xbuyB' },
+    { success: true, orderId: '0xfakA', status: 'matched', makingAmount: '4', takingAmount: '8' },
+  ]);
+  const session = makeSession(client, 100);
+  (session as any).fills.seed(TOKEN_B, 50, 0.4);
+  const recorded: Record<string, number | undefined> = {};
+  const fills = (session as any).fills;
+  const original = fills.expectOrder.bind(fills);
+  fills.expectOrder = (orderId: string, tokenId: string, side: string, pressedAt?: number) => {
+    recorded[orderId] = pressedAt;
+    return original(orderId, tokenId, side, pressedAt);
+  };
+
+  await session.fire({ kind: 'sell', side: 'A' });
+  await session.sellLimitAt('B', 0.8);
+  await session.buyAtBid('B');
+  await session.fire({ kind: 'buy', side: 'A', tier: 0 });
+
+  const ids = Object.keys(recorded);
+  check('all four order kinds registered an order id', ids.length, 4);
+  check(
+    'each carried a plausible press timestamp',
+    ids.every((id) => typeof recorded[id] === 'number' && recorded[id]! >= t0 && recorded[id]! <= Date.now()),
+    true,
+  );
+  session.close();
+}
+
 globalThis.fetch = originalFetch;
 console.log(failures ? `\n${failures} FAILURES\n` : '\nall passed\n');
 process.exit(failures ? 1 : 0);

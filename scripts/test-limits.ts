@@ -156,6 +156,8 @@ check('zero notional is zero shares', limitBuyShares(0, 0.5), 0);
   const res = await placeLimitBuy(client, { tokenId: 't', notional: 200, price: 0.69, tickSize: 0.01, minOrderSize: 5 });
   check('limit buy posts BUY side, shares not dollars', { side: reqs[0].side, size: reqs[0].size, price: reqs[0].price }, { side: 'BUY', size: 289.85, price: 0.69 });
   check('limit buy reports the order id', { ok: res.ok, orderId: res.orderId, shares: res.shares }, { ok: true, orderId: '0xbuy', shares: 289.85 });
+  check('limit result times the sign and post phases separately',
+    typeof res.signMs === 'number' && typeof res.postMs === 'number', true);
 
   const tiny = await placeLimitBuy(client, { tokenId: 't', notional: 2, price: 0.69, tickSize: 0.01, minOrderSize: 5 });
   check('limit buy below venue minimum is refused before signing', { ok: tiny.ok, posts: reqs.length }, { ok: false, posts: 1 });

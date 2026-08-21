@@ -117,15 +117,15 @@ async function run(
   events: unknown[],
   check: (fills: Fill[], feed: FillFeed) => void,
   options: {
-    ourOrders?: [string, string, 'BUY' | 'SELL'][];
-    lateOrders?: [string, string, 'BUY' | 'SELL'][];
+    ourOrders?: [string, string, 'BUY' | 'SELL', number?][];
+    lateOrders?: [string, string, 'BUY' | 'SELL', number?][];
     takerPostInFlight?: boolean;
   } = {},
 ) {
   const feed = new FillFeed(fakeClient(events) as any, 40);
   feed.watch([TEAM_A, TEAM_B]);
-  for (const [orderId, tokenId, side] of options.ourOrders ?? []) {
-    feed.expectOrder(orderId, tokenId, side);
+  for (const [orderId, tokenId, side, pressedAt] of options.ourOrders ?? []) {
+    feed.expectOrder(orderId, tokenId, side, pressedAt);
   }
   const fills: Fill[] = [];
   feed.on('fill', (f) => fills.push(f));
@@ -134,8 +134,8 @@ async function run(
   if (options.lateOrders?.length) {
     // Let the websocket event arrive before postOrder() returns its id.
     await new Promise((r) => setTimeout(r, 20));
-    for (const [orderId, tokenId, side] of options.lateOrders) {
-      feed.expectOrder(orderId, tokenId, side);
+    for (const [orderId, tokenId, side, pressedAt] of options.lateOrders) {
+      feed.expectOrder(orderId, tokenId, side, pressedAt);
     }
   }
   endTakerPost?.();
@@ -256,6 +256,54 @@ await run('unrelated market is ignored', [
 ], (fills) => {
   assert(fills.length === 0, `expected 0 fills, got ${fills.length}`);
 });
+
+// --- press-to-fill attribution ----------------------------------------------
+// The "signal to fill" number: keypress -> confirmation. Attributable only when
+// we recorded the press with the order; anything else must stay null rather
+// than inventing a latency.
+
+await run(
+  'taker fill carries press->fill when the press was recorded',
+  [{ ...mergeMatch, payload: { ...mergeMatch.payload, id: 'press-taker' } }],
+  (fills) => {
+    assert(fills.length === 1, `expected 1 fill, got ${fills.length}`);
+    const ms = fills[0]!.sincePressMs;
+    assert(typeof ms === 'number' && ms >= 100, `expected >=100ms since press, got ${ms}`);
+  },
+  { ourOrders: [['0xmerge', TEAM_B, 'BUY', Date.now() - 100]] },
+);
+
+await run(
+  'maker fill carries press->fill when the press was recorded',
+  [captured('TRADE_STATUS_MATCHED')],
+  (fills) => {
+    assert(fills.length === 1, `expected 1 fill, got ${fills.length}`);
+    const f = fills[0]!;
+    assert(f.side === 'SELL' && f.size === 18, `wrong leg: ${f.side} ${f.size}`);
+    const ms = f.sincePressMs;
+    assert(typeof ms === 'number' && ms >= 250, `expected >=250ms since press, got ${ms}`);
+  },
+  { ourOrders: [['0x23956c38b8edab2ae6337fbf999f2cc9b9ce13e69b7f1c016371c406de8aefe8', TEAM_B, 'SELL', Date.now() - 250]] },
+);
+
+await run(
+  'order recorded without a press time reports null, not zero',
+  [{ ...mergeMatch, payload: { ...mergeMatch.payload, id: 'press-absent' } }],
+  (fills) => {
+    assert(fills.length === 1, `expected 1 fill, got ${fills.length}`);
+    assert(fills[0]!.sincePressMs === null, `expected null, got ${fills[0]!.sincePressMs}`);
+  },
+  { ourOrders: [['0xmerge', TEAM_B, 'BUY']] },
+);
+
+await run(
+  'a fill we did not originate has no press->fill',
+  [{ ...mergeMatch, payload: { ...mergeMatch.payload, id: 'press-external' } }],
+  (fills) => {
+    assert(fills.length === 1, `expected 1 fill, got ${fills.length}`);
+    assert(fills[0]!.sincePressMs === null, `expected null, got ${fills[0]!.sincePressMs}`);
+  },
+);
 
 console.log(process.exitCode ? '\nFAILURES\n' : '\nall passed\n');
 process.exit(process.exitCode ?? 0);

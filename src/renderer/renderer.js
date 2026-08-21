@@ -183,13 +183,24 @@ function renderSide(side, view) {
   });
 }
 
+/**
+ * Turn any duration of more than 1500ms red — the same threshold the ping bar
+ * uses — so a slow order stands out in the log without reading every line.
+ * Runs on already-escaped text; only whole "NNNNms" tokens are wrapped.
+ */
+function paintDurations(escaped) {
+  return escaped.replace(/\b(\d{4,})ms\b/g, (m, n) =>
+    Number(n) > 1500 ? `<span class="slowms">${m}</span>` : m,
+  );
+}
+
 function renderLog(entries) {
   const host = $('#log');
   const atBottom = host.scrollTop + host.clientHeight >= host.scrollHeight - 20;
   host.innerHTML = entries
     .map((e) => {
       const t = new Date(e.at).toTimeString().slice(0, 8);
-      return `<div class="${e.level}">${t}  ${escapeHtml(e.text)}</div>`;
+      return `<div class="${e.level}">${t}  ${paintDurations(escapeHtml(e.text))}</div>`;
     })
     .join('');
   if (atBottom) host.scrollTop = host.scrollHeight;

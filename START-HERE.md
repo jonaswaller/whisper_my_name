@@ -190,6 +190,12 @@ Each side shows:
   It reloads itself within a second of firing.
 - A **greyed-out button** means the price has moved past your slippage and that
   order couldn't fill. It's telling you before you press, not after.
+- **Every order line in the log ends with how long it took.** Anything over
+  1.5s shows in red. On limit orders a slow one is split into
+  `(sign X + post Y)` — `sign` is order preparation on your connection (the
+  first limit order on a market can take ~2s; later ones are fast), `post` is
+  Polymarket itself. A fill line ending `press→fill 745ms` is the full time
+  from your keypress to the fill confirmation.
 
 Top right, three lights: **book** (prices streaming), **fills** (trade
 confirmations), **conn** (connection warm, with its speed in ms). All three
