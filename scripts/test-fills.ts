@@ -10,6 +10,8 @@ import { FillFeed, type Fill } from '../src/agent/fills.ts';
 
 const TEAM_B = '8842039361063407895665178447251374140449970581227373457579811821425592009042';
 const TEAM_A = '40472665679887425908378900626110398741048094992392767676262326176479189032482';
+/** takerOrderId of the captured live sell below — the id our POST would have returned. */
+const TAKER_ID = '0x27ee4245afd42750c6dfd6f217bbf7dbd5089adca01c30a17206d334611a7cd4';
 
 /** Captured verbatim from scripts/debug-user-ws.ts during the live sell. */
 const captured = (status: string) => ({
@@ -120,6 +122,8 @@ async function run(
     ourOrders?: [string, string, 'BUY' | 'SELL', number?][];
     lateOrders?: [string, string, 'BUY' | 'SELL', number?][];
     takerPostInFlight?: boolean;
+    /** A POST-response fill applied to the position before any event arrives. */
+    provisional?: { orderId: string; tokenId: string; side: 'BUY' | 'SELL'; shares: number; price: number };
   } = {},
 ) {
   const feed = new FillFeed(fakeClient(events) as any, 40);
@@ -127,15 +131,22 @@ async function run(
   for (const [orderId, tokenId, side, pressedAt] of options.ourOrders ?? []) {
     feed.expectOrder(orderId, tokenId, side, pressedAt);
   }
+  if (options.provisional) {
+    const { orderId, tokenId, side, shares, price } = options.provisional;
+    feed.expectOrder(orderId, tokenId, side, Date.now(), { shares, price });
+  }
   const fills: Fill[] = [];
   feed.on('fill', (f) => fills.push(f));
   const endTakerPost = options.takerPostInFlight ? feed.beginTakerPost() : null;
   await feed.start();
-  if (options.lateOrders?.length) {
+  if (options.lateOrders?.length || (options as any).lateProvisional) {
     // Let the websocket event arrive before postOrder() returns its id.
     await new Promise((r) => setTimeout(r, 20));
-    for (const [orderId, tokenId, side, pressedAt] of options.lateOrders) {
+    for (const [orderId, tokenId, side, pressedAt] of options.lateOrders ?? []) {
       feed.expectOrder(orderId, tokenId, side, pressedAt);
+    }
+    if ((options as any).lateProvisional) {
+      feed.expectOrder(TAKER_ID, TEAM_B, 'SELL', Date.now(), { shares: 18, price: 0.15 });
     }
   }
   endTakerPost?.();
@@ -303,6 +314,52 @@ await run(
     assert(fills.length === 1, `expected 1 fill, got ${fills.length}`);
     assert(fills[0]!.sincePressMs === null, `expected null, got ${fills[0]!.sincePressMs}`);
   },
+);
+
+// --- POST-response fills applied ahead of the websocket ---------------------
+// The response is the authority on a FAK's fill and arrives ~100ms after the
+// press; the confirmation event trails by ~0.65s (sometimes 2s+). The position
+// must reflect the response at once, and the confirmation must not count the
+// same shares again — replayed with the real captured event, all three echoes.
+
+await run(
+  'provisional fill moves the position before any event',
+  [],
+  (fills, feed) => {
+    assert(fills.length === 0, `no event, so no fill emitted; got ${fills.length}`);
+    assert(feed.position(TEAM_B).shares === -18, `expected -18 from the response alone, got ${feed.position(TEAM_B).shares}`);
+  },
+  { provisional: { orderId: TAKER_ID, tokenId: TEAM_B, side: 'SELL', shares: 18, price: 0.15 } },
+);
+
+await run(
+  'the confirmation for a provisional fill does not double count (MATCHED/MINED/CONFIRMED)',
+  [captured('TRADE_STATUS_MATCHED'), captured('TRADE_STATUS_MINED'), captured('TRADE_STATUS_CONFIRMED')],
+  (fills, feed) => {
+    assert(fills.length === 1, `expected the confirmation to be emitted once, got ${fills.length}`);
+    assert(fills[0]!.size === 18, `the emitted fill still reports its real size, got ${fills[0]!.size}`);
+    assert(feed.position(TEAM_B).shares === -18, `expected -18, not -36: got ${feed.position(TEAM_B).shares}`);
+  },
+  { provisional: { orderId: TAKER_ID, tokenId: TEAM_B, side: 'SELL', shares: 18, price: 0.15 } },
+);
+
+await run(
+  'a confirmation larger than the provisional applies only the excess',
+  [captured('TRADE_STATUS_MATCHED')],
+  (_fills, feed) => {
+    assert(feed.position(TEAM_B).shares === -18, `10 provisional + 8 excess should be -18, got ${feed.position(TEAM_B).shares}`);
+  },
+  { provisional: { orderId: TAKER_ID, tokenId: TEAM_B, side: 'SELL', shares: 10, price: 0.15 } },
+);
+
+await run(
+  'a confirmation that beat the POST response nets against the provisional on replay',
+  [{ ...captured('TRADE_STATUS_MATCHED'), payload: { ...captured('TRADE_STATUS_MATCHED').payload, traderSide: 'TAKER' } }],
+  (fills, feed) => {
+    assert(fills.length === 1, `expected 1 replayed fill, got ${fills.length}`);
+    assert(feed.position(TEAM_B).shares === -18, `expected -18 after replay, got ${feed.position(TEAM_B).shares}`);
+  },
+  { takerPostInFlight: true, lateProvisional: true } as any,
 );
 
 console.log(process.exitCode ? '\nFAILURES\n' : '\nall passed\n');

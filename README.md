@@ -7,17 +7,19 @@ dollar-denominated FAK (fill-and-kill) taker orders on moneyline markets.
 > setup and daily use, no technical background assumed. This file is the
 > engineering notes.
 
-Eight keys, no mouse, no browser:
+Numpad, no mouse, no browser:
 
 ```
         ┌─────┬─────┬─────┐
         │  7  │  8  │  9  │   sell A · sell B · next market
         ├─────┼─────┼─────┤
-        │  4  │  5  │  6  │   TEAM B   small → semi-big → big
+        │  4  │  ·  │  6  │   TEAM B   small · big
         ├─────┼─────┼─────┤
-        │  1  │  2  │  3  │   TEAM A   small → semi-big → big
+        │  1  │  ·  │  3  │   TEAM A   small · big
         └─────┴─────┴─────┘
 ```
+
+(2 and 5 used to be a "semi-big" tier; removed 2026-08-26 as unused.)
 
 ---
 
@@ -96,7 +98,7 @@ npm run trade -- "<url>" --fire B1 --live --amount 3
 npm test                            # replay tests, no network, no money
 ```
 
-`--fire` takes `A1 A2 A3 B1 B2 B3` or `SA` / `SB`. Without `--live` it signs and
+`--fire` takes `A1 A2 B1 B2` (small / big) or `SA` / `SB`. Without `--live` it signs and
 stops. `--amount` overrides the tier so a real test can be a few dollars.
 
 ---
@@ -196,6 +198,11 @@ otherwise it signs inline and eats the latency.
   fails open: swallowing a wanted trade is worse than one that might kill.
 - Positions are seeded from the Data API on arm, so the sell keys never think
   he's flat when he isn't.
+- A FAK's fill is applied to the position from the **POST response**, not the
+  websocket confirmation that trails it by ~0.65s (sometimes 2s+). The
+  confirmation is netted against it (`FillFeed.expectOrder` provisional), so
+  the shares he just bought are sellable ~100ms after the press and never
+  double-counted.
 
 ## Layout
 

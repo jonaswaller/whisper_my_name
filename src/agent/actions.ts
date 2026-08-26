@@ -10,8 +10,8 @@
  */
 
 export type ActionId =
-  | 'buyA1' | 'buyA2' | 'buyA3'
-  | 'buyB1' | 'buyB2' | 'buyB3'
+  | 'buyA1' | 'buyA2'
+  | 'buyB1' | 'buyB2'
   | 'sellA' | 'sellB'
   | 'sellAskA' | 'sellAskB'
   | 'sellMaxA' | 'sellMaxB'
@@ -33,11 +33,9 @@ export interface ActionSpec {
 
 export const ACTIONS: ActionSpec[] = [
   { id: 'buyA1', label: 'Buy A — small', group: 'Buy' },
-  { id: 'buyA2', label: 'Buy A — semi-big', group: 'Buy' },
-  { id: 'buyA3', label: 'Buy A — big', group: 'Buy' },
+  { id: 'buyA2', label: 'Buy A — big', group: 'Buy' },
   { id: 'buyB1', label: 'Buy B — small', group: 'Buy' },
-  { id: 'buyB2', label: 'Buy B — semi-big', group: 'Buy' },
-  { id: 'buyB3', label: 'Buy B — big', group: 'Buy' },
+  { id: 'buyB2', label: 'Buy B — big', group: 'Buy' },
 
   { id: 'sellA', label: 'Sell all A', group: 'Sell now', hint: 'market — takes the bid immediately' },
   { id: 'sellB', label: 'Sell all B', group: 'Sell now', hint: 'market — takes the bid immediately' },
@@ -78,18 +76,25 @@ export const ACTIONS: ActionSpec[] = [
   { id: 'nextMarket', label: 'Next market (Game 1 → 2)', group: 'Other' },
 ];
 
-export type Bindings = Partial<Record<ActionId, string>>;
+/**
+ * Action id -> accelerator. `null` means DELIBERATELY unbound and is persisted
+ * as such; a missing key means "no preference yet" and takes the platform
+ * default on load. The distinction is what lets an unbind survive a restart
+ * while a brand-new action still arrives with a key.
+ */
+export type Bindings = Partial<Record<ActionId, string | null>>;
 
 /**
  * Full-numpad defaults for Windows.
  *
- * The digits keep his original layout (1-3 buy A, 4-6 buy B, 7/8 sell, 9 next),
- * and the operator keys take the standing-order actions so every feature has a
- * key without needing a modifier chord.
+ * The digits keep his original layout (1/3 buy A small/big, 4/6 buy B, 7/8
+ * sell, 9 next), and the operator keys take the standing-order actions so
+ * every feature has a key without needing a modifier chord. 2 and 5 are free —
+ * they were the removed semi-big tier.
  */
 export const NUMPAD_BINDINGS: Bindings = {
-  buyA1: 'num1', buyA2: 'num2', buyA3: 'num3',
-  buyB1: 'num4', buyB2: 'num5', buyB3: 'num6',
+  buyA1: 'num1', buyA2: 'num3',
+  buyB1: 'num4', buyB2: 'num6',
   sellA: 'num7', sellB: 'num8',
   nextMarket: 'num9',
   cancelAll: 'num0',
@@ -134,11 +139,9 @@ export const NUMLOCK_OFF_ALIASES: Record<string, string> = {};
 /** Mac dev fallback — laptops have no numpad, and bare digits can't be global. */
 export const MAC_BINDINGS: Bindings = {
   buyA1: 'CommandOrControl+Alt+1',
-  buyA2: 'CommandOrControl+Alt+2',
-  buyA3: 'CommandOrControl+Alt+3',
+  buyA2: 'CommandOrControl+Alt+3',
   buyB1: 'CommandOrControl+Alt+4',
-  buyB2: 'CommandOrControl+Alt+5',
-  buyB3: 'CommandOrControl+Alt+6',
+  buyB2: 'CommandOrControl+Alt+6',
   sellA: 'CommandOrControl+Alt+7',
   sellB: 'CommandOrControl+Alt+8',
   nextMarket: 'CommandOrControl+Alt+9',

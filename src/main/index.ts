@@ -41,6 +41,47 @@ function pushSnapshot(): void {
   if (session) send('snapshot', session.snapshot());
 }
 
+// --- stall diagnostics ------------------------------------------------------
+//
+// Reported symptom: a value field stops accepting input and the "hotkeys
+// paused" banner sticks for 5-20s, then everything catches up on its own. In
+// Electron the main process's JS thread is also the browser UI thread that
+// routes input to the window, so that pattern means THIS event loop stalled.
+// Nothing here fixes it; it names the culprit so the next report can.
+
+/** The last main-thread operation that ran — what a stall is blamed on. */
+let lastMainOp = 'idle';
+
+function note(level: 'info' | 'warn' | 'error', text: string): void {
+  if (session) session.note(level, text);
+  else send('hotkey-warning', text);
+}
+
+/** Run a synchronous suspect and log it if it was slow enough to be felt. */
+function timed<T>(label: string, fn: () => T): T {
+  lastMainOp = label;
+  const started = Date.now();
+  try {
+    return fn();
+  } finally {
+    const ms = Date.now() - started;
+    if (ms >= 100) note('warn', `main: ${label} took ${ms}ms`);
+    lastMainOp = `after ${label}`;
+  }
+}
+
+/** Detect the event loop being blocked: a 200ms timer that fires late. */
+function startStallWatchdog(): void {
+  const period = 200;
+  let expected = Date.now() + period;
+  const timer = setInterval(() => {
+    const lag = Date.now() - expected;
+    if (lag >= 300) note('error', `main process stalled ${lag}ms (last op: ${lastMainOp})`);
+    expected = Date.now() + period;
+  }, period);
+  timer.unref?.();
+}
+
 /**
  * Register one action against its accelerator, plus the Num-Lock-off twin.
  * Without the alias, a Windows numpad with Num Lock off sends Home/Up/PgUp and
@@ -85,8 +126,8 @@ function setHotkeysSuspended(suspended: boolean): void {
   // emits another key-status update and used to churn the renderer mid-edit.
   if (hotkeysSuspended === suspended) return;
   hotkeysSuspended = suspended;
-  if (suspended) globalShortcut.unregisterAll();
-  else registerHotkeys();
+  if (suspended) timed('unregister hotkeys', () => globalShortcut.unregisterAll());
+  else timed('register hotkeys', () => registerHotkeys());
   send('hotkeys-suspended', suspended);
 }
 
@@ -114,10 +155,8 @@ async function runAction(id: ActionId): Promise<void> {
     switch (id) {
       case 'buyA1': return void (await fire({ kind: 'buy', side: 'A', tier: 0 }));
       case 'buyA2': return void (await fire({ kind: 'buy', side: 'A', tier: 1 }));
-      case 'buyA3': return void (await fire({ kind: 'buy', side: 'A', tier: 2 }));
       case 'buyB1': return void (await fire({ kind: 'buy', side: 'B', tier: 0 }));
       case 'buyB2': return void (await fire({ kind: 'buy', side: 'B', tier: 1 }));
-      case 'buyB3': return void (await fire({ kind: 'buy', side: 'B', tier: 2 }));
       case 'sellA': return void (await fire({ kind: 'sell', side: 'A' }));
       case 'sellB': return void (await fire({ kind: 'sell', side: 'B' }));
       case 'sellAskA': return void (await session.sellAtAsk('A'));
@@ -199,6 +238,7 @@ async function boot(): Promise<void> {
   registerHotkeys();
   pushSnapshot();
   setInterval(pushSnapshot, 500); // keep book age and warmth fresh in the UI
+  startStallWatchdog();
 
   // Restore the last armed market so a restart mid-match costs nothing.
   if (config.lastEventUrl) {
@@ -218,7 +258,7 @@ ipcMain.handle('arm', async (_e, url: string, marketSlug?: string) => {
     // here too, or the next config edit would save this stale copy and wipe the
     // restore-on-launch.
     config = session.getConfig();
-    saveConfig(config);
+    timed('save config', () => saveConfig(config));
     return { ok: true, markets: session.listMarkets(), armed: session.getMarket()?.slug };
   } catch (err: any) {
     return { ok: false, error: err.message };
@@ -228,14 +268,14 @@ ipcMain.handle('arm', async (_e, url: string, marketSlug?: string) => {
 ipcMain.handle('set-watch-wallet', (_e, wallet: string) => {
   session?.setWatchWallet(wallet);
   config = { ...config, watchWallet: wallet };
-  saveConfig(config);
+  timed('save config', () => saveConfig(config));
   return { ok: true };
 });
 
 ipcMain.handle('list-markets', () => session?.listMarkets() ?? []);
 
 ipcMain.handle('update-config', async (_e, next: TradingConfig) => {
-  // Both sides are independent, so validate all six.
+  // Both sides are independent, so validate all four.
   for (const side of ['A', 'B'] as const) {
     for (const tier of next.tiers?.[side] ?? []) {
       const problem = validateTier(tier, next.maxNotionalPerOrder);
@@ -258,7 +298,7 @@ ipcMain.handle('update-config', async (_e, next: TradingConfig) => {
   config = { ...config, ...editable, bindings: config.bindings };
 
   await session?.updateConfig(config);
-  saveConfig(config);
+  timed('save config', () => saveConfig(config));
   return { ok: true, config };
 });
 
@@ -284,19 +324,22 @@ ipcMain.handle('list-actions', () => ({ actions: ACTIONS, bindings: config.bindi
 ipcMain.handle('set-binding', (_e, id: ActionId, accelerator: string | null) => {
   const next: Bindings = { ...config.bindings };
 
+  // null, not delete: a deleted key is indistinguishable from "never set" and
+  // loadConfig would hand it the default again on the next launch — which is
+  // exactly the bug where keys he unbound came back after every restart.
   if (!accelerator) {
-    delete next[id];
+    next[id] = null;
   } else {
     const problem = validateAccelerator(accelerator);
     if (problem) return { ok: false, error: problem, bindings: config.bindings };
     const clash = findConflict(next, accelerator, id);
-    if (clash) delete next[clash];
+    if (clash) next[clash] = null;
     next[id] = accelerator;
   }
 
   config = { ...config, bindings: next };
-  saveConfig(config);
-  registerHotkeys();
+  timed('save config', () => saveConfig(config));
+  timed('register hotkeys', () => registerHotkeys());
   return { ok: true, bindings: config.bindings };
 });
 
@@ -332,8 +375,18 @@ ipcMain.handle('cancel-all', async () => {
 
 /** Called by the renderer whenever a price field gains or loses focus. */
 ipcMain.handle('suspend-hotkeys', (_e, suspended: boolean) => {
+  const started = Date.now();
   setHotkeysSuspended(Boolean(suspended));
-  return { ok: true, suspended };
+  // The renderer compares this with its own round-trip time: a slow handler
+  // is a hotkey-registration problem, a fast handler behind a slow round trip
+  // is a blocked event loop somewhere else.
+  return { ok: true, suspended, mainMs: Date.now() - started };
+});
+
+/** Renderer-side diagnostics, into the same log the Copy button exports. */
+ipcMain.handle('note', (_e, level: 'info' | 'warn' | 'error', text: string) => {
+  note(level, String(text).slice(0, 300));
+  return { ok: true };
 });
 
 app.whenReady().then(boot);

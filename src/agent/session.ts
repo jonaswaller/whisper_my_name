@@ -984,8 +984,23 @@ export class Session extends EventEmitter {
     try {
       result = await dispatch(this.client, order, side);
       // Register before releasing buffered taker events, so a merge match is
-      // attributed to the token and side we actually sent.
-      if (result.orderId) this.fills.expectOrder(result.orderId, tokenId, side, startedAt);
+      // attributed to the token and side we actually sent. The response's fill
+      // goes on the position immediately (see FillFeed.expectOrder): he must
+      // be able to sell what he just bought without waiting ~0.65-2s for the
+      // websocket to say so.
+      if (result.orderId) {
+        const provisional =
+          result.filledShares > 0 && result.avgPrice !== null
+            ? { shares: result.filledShares, price: result.avgPrice }
+            : undefined;
+        this.fills.expectOrder(result.orderId, tokenId, side, startedAt, provisional);
+        if (provisional) {
+          // Same bookkeeping a fill event gets: shields the fresh position
+          // from the lagging Data API poll and books the authoritative check.
+          this.markPositionActivity(tokenId);
+          this.schedulePositionReconcile(tokenId);
+        }
+      }
     } finally {
       endTakerPost();
     }
@@ -1083,6 +1098,15 @@ export class Session extends EventEmitter {
       watchStatus: this.watcher.status(),
       recent: this.log.slice(-40),
     };
+  }
+
+  /**
+   * Diagnostics from outside the session (main-process stalls, HUD freezes)
+   * go through here so they sit in the same buffer as the trading log — the
+   * one "Copy log" exports, which is what he sends when something misbehaves.
+   */
+  note(level: LogEntry['level'], text: string): void {
+    this.push(level, text);
   }
 
   private push(level: LogEntry['level'], text: string): void {

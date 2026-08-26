@@ -30,11 +30,15 @@ export interface Tier {
  *
  * He sizes the favourite and the underdog differently — a $250 clip on a 0.85
  * favourite is a very different bet from $250 on its 0.15 counterpart, and the
- * slippage each can bear differs too. So all six buy buttons are independent.
+ * slippage each can bear differs too. So all four buy buttons are independent.
+ *
+ * Two tiers, small and big. There used to be a "semi-big" between them; he
+ * never used it and it cost him screen height, so it was removed (2026-08-26).
+ * Saved configs from that era are migrated: index 0 and 2 survive, 1 is dropped.
  */
 export interface SideTiers {
-  A: [Tier, Tier, Tier];
-  B: [Tier, Tier, Tier];
+  A: [Tier, Tier];
+  B: [Tier, Tier];
 }
 
 export interface TradingConfig {
@@ -74,12 +78,10 @@ export const DEFAULT_CONFIG: TradingConfig = {
   tiers: {
     A: [
       { label: 'small', notional: 50, slippageCents: 3 },
-      { label: 'semi-big', notional: 250, slippageCents: 8 },
       { label: 'big', notional: 1000, slippageCents: 20 },
     ],
     B: [
       { label: 'small', notional: 50, slippageCents: 3 },
-      { label: 'semi-big', notional: 250, slippageCents: 8 },
       { label: 'big', notional: 1000, slippageCents: 20 },
     ],
   },
@@ -108,17 +110,19 @@ export function configPath(root = process.cwd()): string {
  */
 function migrateBindings(raw: any): ActionBindings {
   if (!raw || typeof raw !== 'object') return {};
-  if (!Array.isArray(raw.buyA)) return raw as ActionBindings; // already flat
+  // Already flat. Explicit nulls are kept: they record an unbind he made on
+  // purpose, and the default merge in loadConfig must not resurrect the key.
+  if (!Array.isArray(raw.buyA)) return dropSemiBig(raw as Record<string, unknown>);
 
   const out: ActionBindings = {};
-  const [a1, a2, a3] = raw.buyA ?? [];
-  const [b1, b2, b3] = raw.buyB ?? [];
+  // Legacy triples: [small, semi-big, big]. Semi-big no longer exists, so its
+  // key is dropped and big becomes tier 2.
+  const [a1, , a3] = raw.buyA ?? [];
+  const [b1, , b3] = raw.buyB ?? [];
   if (a1) out.buyA1 = a1;
-  if (a2) out.buyA2 = a2;
-  if (a3) out.buyA3 = a3;
+  if (a3) out.buyA2 = a3;
   if (b1) out.buyB1 = b1;
-  if (b2) out.buyB2 = b2;
-  if (b3) out.buyB3 = b3;
+  if (b3) out.buyB2 = b3;
   if (raw.sellA) out.sellA = raw.sellA;
   if (raw.sellB) out.sellB = raw.sellB;
   if (raw.nextMarket) out.nextMarket = raw.nextMarket;
@@ -126,20 +130,49 @@ function migrateBindings(raw: any): ActionBindings {
 }
 
 /**
- * Tiers used to be one shared array of three. They are now per side, so an
- * existing config's sizes are copied to both rather than silently reset.
+ * A flat map saved while three tiers existed has `buyA3`/`buyB3` for "big".
+ * Big is now tier 2, so its key moves to `buyA2`/`buyB2` — including an
+ * explicit null, so a deliberate unbind of big survives too. The old semi-big
+ * key on `buyA2` is discarded with the tier.
+ */
+function dropSemiBig(flat: Record<string, unknown>): ActionBindings {
+  const out: Record<string, unknown> = { ...flat };
+  for (const side of ['A', 'B']) {
+    const bigKey = `buy${side}3`;
+    if (bigKey in out) {
+      out[`buy${side}2`] = out[bigKey];
+      delete out[bigKey];
+    }
+  }
+  return out as ActionBindings;
+}
+
+/**
+ * Tiers used to be one shared array of three, then three per side. They are
+ * now two per side (small, big). Any saved shape must load with his sizes
+ * intact rather than silently reset: a triple keeps its first and last entry.
  */
 function migrateTiers(raw: any): SideTiers {
   const fallback = () => structuredClone(DEFAULT_CONFIG.tiers);
   if (!raw) return fallback();
 
+  const pair = (side: any): [Tier, Tier] | null => {
+    if (!Array.isArray(side)) return null;
+    const ok = (t: any) => t && typeof t === 'object' && Number.isFinite(Number(t.notional));
+    if (side.length === 2 && side.every(ok)) return structuredClone(side) as [Tier, Tier];
+    if (side.length === 3 && ok(side[0]) && ok(side[2])) {
+      return [structuredClone(side[0]), structuredClone(side[2])];
+    }
+    return null;
+  };
+
   if (Array.isArray(raw)) {
-    if (raw.length !== 3) return fallback();
-    return { A: structuredClone(raw) as SideTiers['A'], B: structuredClone(raw) as SideTiers['B'] };
+    const shared = pair(raw);
+    return shared ? { A: shared, B: structuredClone(shared) } : fallback();
   }
-  const ok = (side: any) => Array.isArray(side) && side.length === 3;
-  if (ok(raw.A) && ok(raw.B)) return { A: structuredClone(raw.A), B: structuredClone(raw.B) };
-  return fallback();
+  const a = pair(raw.A);
+  const b = pair(raw.B);
+  return a && b ? { A: a, B: b } : fallback();
 }
 
 export function loadConfig(root = process.cwd()): TradingConfig {
@@ -148,7 +181,8 @@ export function loadConfig(root = process.cwd()): TradingConfig {
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<TradingConfig>;
     // Shallow merge: a config written by an older build must still boot. New
-    // actions inherit their default key rather than arriving unbound.
+    // actions inherit their default key rather than arriving unbound — but an
+    // action saved as null stays unbound, because the spread keeps the null.
     return {
       ...structuredClone(DEFAULT_CONFIG),
       ...parsed,

@@ -259,9 +259,41 @@ function syncHotkeySuspension() {
   if (suspended === requestedHotkeySuspension) return;
   requestedHotkeySuspension = suspended;
   suspensionQueue = suspensionQueue
-    .then(() => api.suspendHotkeys(suspended))
+    .then(async () => {
+      // Time the round trip. A field that will not take input while the
+      // "paused" banner sticks means this call did not come back for seconds;
+      // recording how long, and how much of it main spent on the hotkeys
+      // themselves, is what separates a registration cost from a stalled loop.
+      const started = Date.now();
+      const res = await api.suspendHotkeys(suspended);
+      const ms = Date.now() - started;
+      if (ms >= 500) {
+        api.note('warn', `HUD: ${suspended ? 'pausing' : 'resuming'} hotkeys took ${ms}ms (main spent ${res?.mainMs ?? '?'}ms on it)`);
+      }
+    })
     .catch((err) => log('error', `could not ${suspended ? 'pause' : 'resume'} hotkeys: ${err?.message ?? err}`));
 }
+
+// The renderer's own stall detector, so a freeze can be pinned to this
+// process or to main. Same shape as main's watchdog: a timer that fires late.
+// Chromium throttles timers to once a second while the page is hidden or
+// occluded, which looks exactly like a freeze — so an interval during which
+// the page was not visible is discarded rather than reported.
+(() => {
+  const period = 200;
+  let expected = Date.now() + period;
+  let hiddenSince = document.hidden;
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) hiddenSince = true;
+  });
+  setInterval(() => {
+    const lag = Date.now() - expected;
+    const wasHidden = hiddenSince || document.hidden;
+    hiddenSince = document.hidden;
+    if (lag >= 300 && !wasHidden) api.note('error', `HUD froze ${lag}ms`);
+    expected = Date.now() + period;
+  }, period);
+})();
 
 function setEditingField(editing) {
   editingField = editing;
@@ -751,7 +783,7 @@ const FLASH_SELECTOR = {
   cancelAll: '#cancel-all',
 };
 api.onPressed((id) => {
-  const buy = /^buy([AB])([123])$/.exec(id);
+  const buy = /^buy([AB])([12])$/.exec(id);
   const sel = buy ? `.buy[data-side="${buy[1]}"][data-tier="${Number(buy[2]) - 1}"]` : FLASH_SELECTOR[id];
   const el = sel ? $(sel) : null;
   if (el) {

@@ -120,16 +120,18 @@ and will fire instantly.
         ┌─────┬─────┬─────┐
         │  7  │  8  │  9  │   sell A · sell B · next game
         ├─────┼─────┼─────┤
-        │  4  │  5  │  6  │   TEAM B   small · semi-big · big
+        │  4  │  ·  │  6  │   TEAM B   small · big
         ├─────┼─────┼─────┤
-        │  1  │  2  │  3  │   TEAM A   small · semi-big · big
+        │  1  │  ·  │  3  │   TEAM A   small · big
         └─────┴─────┴─────┘
 ```
 
 Your **numpad**, laid out exactly as it sits under your hand. They work while
 the stream is fullscreen — you don't need to click the window first.
 
-- **1–3** buy Team A, **4–6** buy Team B. Left to right = bigger.
+- **1 / 3** buy Team A small / big, **4 / 6** buy Team B small / big.
+  **2 and 5 do nothing** — that was the "semi-big" size, removed because you
+  never used it.
 - **7 / 8** sell your whole position in A or B.
 - **9** jumps to the next game in the series, so you don't touch the mouse
   between Game 1 and Game 2.
@@ -194,8 +196,17 @@ Each side shows:
   1.5s shows in red. On limit orders a slow one is split into
   `(sign X + post Y)` — `sign` is order preparation on your connection (the
   first limit order on a market can take ~2s; later ones are fast), `post` is
-  Polymarket itself. A fill line ending `press→fill 745ms` is the full time
-  from your keypress to the fill confirmation.
+  Polymarket itself.
+- **Reading the two numbers on an instant buy/sell:** the orange `94ms` on
+  the order line is keypress → Polymarket's answer, and for instant orders
+  that answer *is* the fill — that's your real execution speed. The green
+  `press→fill 745ms` on the line below is keypress → Polymarket's separate
+  confirmation message arriving; that delay is on their side and doesn't hold
+  anything up. Your shares appear as soon as the orange number lands, so you
+  can sell straight away.
+- If the window ever freezes or a field won't take input, just wait it out,
+  then hit **Copy** on the log and send it — it now records what froze and
+  for how long.
 
 Top right, three lights: **book** (prices streaming), **fills** (trade
 confirmations), **conn** (connection warm, with its speed in ms). All three

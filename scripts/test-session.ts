@@ -293,6 +293,57 @@ console.log('\npress time recorded with every order:\n');
   session.close();
 }
 
+// --- position is live the moment the POST confirms ---------------------------
+// "once i buy, it takes ~2 seconds to show my shares which means i have 2
+// seconds being unable to sell": the sell keys read the local ledger, which
+// only moved on the websocket confirmation. The POST response must move it.
+
+console.log('\nposition updated from the POST response:\n');
+
+{
+  const client = clientWithResponses([
+    { success: true, orderId: '0xfakA', status: 'matched', makingAmount: '4', takingAmount: '8' },
+  ]);
+  const session = makeSession(client, 100);
+  await session.fire({ kind: 'buy', side: 'A', tier: 0 });
+  check('shares are on the position right after the POST, before any websocket event', session.snapshot().A.shares, 108);
+
+  // The confirmation arrives ~0.65s later. Same order id, same 8 shares.
+  (session as any).fills.onEvent({ topic: 'user', type: 'trade', payload: {
+    id: 'confirm-1', side: 'BUY', size: '8', price: '0.5', status: 'TRADE_STATUS_MATCHED',
+    takerOrderId: '0xfakA', tokenId: TOKEN_A, traderSide: 'TAKER', makerOrders: [],
+  } });
+  check('the websocket confirmation does not add them again', session.snapshot().A.shares, 108);
+  check('the confirmation is still logged with press->fill', /press→fill/.test(session.snapshot().recent.at(-1)?.text ?? ''), true);
+
+  // And the shares are sellable immediately: a market sell sizes off the ledger.
+  session.close();
+}
+
+{
+  // A killed FAK (no shares) must leave the position alone.
+  const client = clientWithResponses([{ success: true, orderId: '0xkilled', status: 'live', makingAmount: '0', takingAmount: '0' }]);
+  const session = makeSession(client, 100);
+  await session.fire({ kind: 'buy', side: 'A', tier: 0 });
+  check('a killed order adds nothing to the position', session.snapshot().A.shares, 100);
+  session.close();
+}
+
+{
+  // Selling what was just bought, inside the websocket lag window.
+  const client = clientWithResponses([
+    { success: true, orderId: '0xfakA', status: 'matched', makingAmount: '4', takingAmount: '8' },
+    acceptedSell(8),
+  ]);
+  const session = makeSession(client, 0);
+  await session.fire({ kind: 'buy', side: 'A', tier: 0 });
+  const result = await session.fire({ kind: 'sell', side: 'A' });
+  // (buys also go through createMarketOrder, in dollars, so filter to the sell's share count)
+  check('a sell right after the buy sends the just-bought shares', client.marketShares.filter((n) => n != null), [8]);
+  check('and it goes through', result?.verdict, 'filled');
+  session.close();
+}
+
 globalThis.fetch = originalFetch;
 console.log(failures ? `\n${failures} FAILURES\n` : '\nall passed\n');
 process.exit(failures ? 1 : 0);

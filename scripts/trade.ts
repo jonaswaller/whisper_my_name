@@ -9,7 +9,7 @@
  *   npx tsx scripts/trade.ts <url> --fire A1 --live
  *   npx tsx scripts/trade.ts <url> --fire A1 --live --amount 5 --slippage 3
  *
- * --fire takes <side><tier>: A1 A2 A3 B1 B2 B3, or SA / SB to sell out.
+ * --fire takes <side><tier>: A1 A2 B1 B2 (small / big), or SA / SB to sell out.
  */
 
 import { createSecureClient } from '@polymarket/client';
@@ -28,7 +28,6 @@ import { fetchPositions } from '../src/agent/positions.ts';
 /** Placeholder tiers — these become editable fields in the HUD. */
 const TIERS = [
   { label: 'small', notional: 50, slippageCents: 3 },
-  { label: 'semi-big', notional: 250, slippageCents: 8 },
   { label: 'big', notional: 1000, slippageCents: 20 },
 ];
 const SELL_SLIPPAGE_CENTS = 5;
@@ -199,7 +198,7 @@ async function main(): Promise<void> {
     const tierIndex = Number(fire[1]) - 1;
     const tier = TIERS[tierIndex];
     if (!tier) {
-      console.error(`\nbad tier in --fire ${fire} (use 1, 2 or 3)`);
+      console.error(`\nbad tier in --fire ${fire} (use 1 or 2)`);
       process.exit(1);
     }
     // Default the test to a small size; --amount overrides the tier.

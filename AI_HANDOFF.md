@@ -247,5 +247,39 @@ Not yet done:
 4. Nobody has tested the **actual numpad on Windows hardware**. Registration is
    verified; the physical keys are not.
 
+Feedback round of 2026-08-22/23, addressed 2026-08-26:
+
+- **Semi-big tier removed** (his screen). `SideTiers` is `[Tier, Tier]`,
+  actions `buyA1/buyA2` = small/big, numpad `1/3` and `4/6`, keys 2/5 free.
+  `migrateTiers` keeps index 0 and 2 of a saved triple; `dropSemiBig` moves a
+  flat map's `buyA3/buyB3` to `buyA2/buyB2` (including an explicit null).
+  Tested against the exact shape of his config. Presign is generic over the
+  tier array, so the hot path did not change.
+- **Position from the POST response.** `send()` passes the response's
+  `filledShares`/`avgPrice` to `FillFeed.expectOrder()` as a provisional fill;
+  it is applied at once and each websocket confirmation for that order id
+  consumes from it before touching the ledger. Fixes "2 seconds unable to sell
+  after a buy". Tested with the captured MATCHED/MINED/CONFIRMED triple, the
+  websocket-beats-POST replay, and an over-sized confirmation. `send()` also
+  marks activity + schedules the 6.5s reconcile, so the lagging Data API poll
+  cannot clobber it and still gets the last word. **Not yet exercised live** —
+  do one small buy and sell it inside a second before he relies on it.
+- **Unbinds persist.** `set-binding` writes `null`; `loadConfig` keeps nulls
+  and only fills MISSING keys with defaults. Deleting a key was the bug.
+- **Stall watchdogs, not a fix.** The "field won't take input, banner stuck
+  5-20s, heals itself" report matches a blocked main event loop (in Electron
+  it is also the UI thread that routes input). `startStallWatchdog()` in main
+  logs `main process stalled Nms (last op: …)`; `timed()` wraps the suspects
+  (hotkey register/unregister, config writes) and logs any that take 100ms+;
+  the renderer logs `HUD froze Nms` (visibility-guarded — Chromium throttles
+  hidden-page timers to 1/s, which looks identical) and the pause/resume
+  round-trip when it exceeds 500ms with how much of it main spent. All go to
+  the session log so "Copy log" carries them. Wait for one real occurrence
+  before touching the suspend path — it has a history.
+- **His "buys are slow" reading was a display artefact**, not latency: the
+  orange POST time (~95ms) is the execution; the green `press→fill` is the
+  venue's confirmation lag, now irrelevant to selling because of the
+  provisional position.
+
 `START-HERE.md` is the non-technical setup guide for the trader. `README.md` is
 the engineering overview. Keep both current.

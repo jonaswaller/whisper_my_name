@@ -21,6 +21,8 @@ contextBridge.exposeInMainWorld('api', {
   cancelAll: () => ipcRenderer.invoke('cancel-all'),
   /** Suspend global hotkeys while a price field has focus. */
   suspendHotkeys: (suspended: boolean) => ipcRenderer.invoke('suspend-hotkeys', suspended),
+  /** A diagnostic line for the session log (what "Copy log" exports). */
+  note: (level: string, text: string) => ipcRenderer.invoke('note', level, text),
 
   onSnapshot: (cb: (s: unknown) => void) =>
     ipcRenderer.on('snapshot', (_e, s) => cb(s)),

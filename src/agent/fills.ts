@@ -63,6 +63,13 @@ interface ExpectedOrder {
   side: 'BUY' | 'SELL';
   /** When the key was pressed, so the fill event can report press-to-fill. */
   pressedAt?: number;
+  /**
+   * Shares already applied to the position from the POST response and still
+   * awaiting their websocket confirmation. Each fill event for this order
+   * consumes from here before touching the position again, so the same shares
+   * are never counted twice.
+   */
+  provisional?: number;
 }
 
 function num(value: unknown): number {
@@ -123,9 +130,27 @@ export class FillFeed extends EventEmitter {
    * token even when the venue keys the trade on the complementary one.
    * Call this as soon as a POST returns an order id.
    */
-  expectOrder(orderId: string, tokenId: string, side: 'BUY' | 'SELL', pressedAt?: number): void {
+  expectOrder(
+    orderId: string,
+    tokenId: string,
+    side: 'BUY' | 'SELL',
+    pressedAt?: number,
+    provisional?: { shares: number; price: number },
+  ): void {
     if (!orderId) return;
-    this.ourOrders.set(orderId, { tokenId, side, pressedAt });
+    const expected: ExpectedOrder = { tokenId, side, pressedAt };
+
+    // A FAK's POST response is the authority on its fill (the websocket cannot
+    // even report a kill), and it arrives ~100ms after the press. The
+    // confirmation event trails it by ~0.65s median and sometimes 2s+, and
+    // until it landed the sell keys read "no position". So the response's fill
+    // is applied NOW and the later event only confirms it. Recorded before the
+    // replay below, so a confirmation that beat the response nets correctly.
+    if (provisional && provisional.shares > 0 && this.watched.has(tokenId)) {
+      expected.provisional = provisional.shares;
+      this.applyToPosition({ tokenId, side, size: provisional.shares, price: provisional.price });
+    }
+    this.ourOrders.set(orderId, expected);
     if (this.ourOrders.size > 500) {
       this.ourOrders = new Map([...this.ourOrders].slice(-250));
     }
@@ -409,11 +434,21 @@ export class FillFeed extends EventEmitter {
     if (this.seen.size > 5_000) {
       this.seen = new Set([...this.seen].slice(-2_500));
     }
-    this.applyToPosition(fill);
+    // Net against shares the POST response already put on the position. Only
+    // whatever exceeds that (a response that under-reported, which has not
+    // been observed) still moves the ledger.
+    let uncounted = fill.size;
+    const expected = this.ourOrders.get(fill.orderId);
+    if (expected?.provisional) {
+      const covered = Math.min(uncounted, expected.provisional);
+      expected.provisional = Number((expected.provisional - covered).toFixed(6));
+      uncounted = Number((uncounted - covered).toFixed(6));
+    }
+    if (uncounted > 0) this.applyToPosition({ ...fill, size: uncounted });
     this.emit('fill', fill);
   }
 
-  private applyToPosition(fill: Fill): void {
+  private applyToPosition(fill: Pick<Fill, 'tokenId' | 'side' | 'size' | 'price'>): void {
     const current = this.position(fill.tokenId);
     const signed = fill.side === 'BUY' ? fill.size : -fill.size;
     const shares = Number((current.shares + signed).toFixed(6));
