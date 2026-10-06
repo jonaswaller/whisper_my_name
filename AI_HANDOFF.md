@@ -30,7 +30,7 @@ action that silently does nothing is worse than one that fails loudly.
 ```bash
 npm install
 npm start          # build + launch Electron
-npm test           # 52 unit tests, no network, no money
+npm test           # 194 checks in 6 files, no network, no money
 npm run typecheck
 ```
 
@@ -58,6 +58,7 @@ src/agent/
   book.ts         streaming top-of-book (WSS), staleness, live tick size
   sizing.ts       slippage -> price cap, sell floors, unfillable veto
   presign.ts      pre-signed order cache with staleness rules
+  floorBuy.ts     near-free buy (keys 2/5): fixed-cap FAK, no book check, presigned
   executor.ts     POST a signed order, interpret the response
   fills.ts        user-channel fills, price-inversion fix, position tracking
   positions.ts    account-wide positions from the Data API
@@ -173,7 +174,7 @@ twice. Buys are deliberately *not* guarded — repeating a buy is legitimate.
 a confirmed fill returns 0. Poll for it; do not read once.
 
 **Every action must stamp `session.stamp()`** — including paths that bail out
-before any network call. There are ~29 stamp points (grep `this.stamp(`). "Nothing appeared to happen"
+before any network call. There are ~34 stamp points (grep `this.stamp(`). "Nothing appeared to happen"
 is exactly when the user needs to see why, and a stale latency reading
 masquerading as current was a real complaint.
 
@@ -280,6 +281,32 @@ Feedback round of 2026-08-22/23, addressed 2026-08-26:
   orange POST time (~95ms) is the execution; the green `press→fill` is the
   venue's confirmation lag, now irrelevant to selling because of the
   provisional position.
+
+Request of 2026-10-05, built 2026-10-06 — **near-free buy** (keys 2/5):
+
+- His report: late in a game bots bid the winner at 99.9c, the winner shows
+  "No asks", and buying the loser at 0.1c said "no book". Cause:
+  `BookFeed.top()` returns null unless BOTH sides exist, and the loser's book
+  is offers only — a loser bid at 0.1c would instantly match a winner bid at
+  99.9c, so none can rest. The normal keys are deliberately left refusing.
+- `buyAtFloor(side)` sends a FAK BUY of `floorBuyNotional` ($20) capped at
+  `floorBuyCapCents` (0.1c, validated 0 < c <= 5) with **no book check** — the
+  cap is the protection. Rounds the cap DOWN to the tick and declines when the
+  tick cannot price it (0.1c on a 0.01 tick), same rule as 99.9c. Presigned by
+  `FloorOrderCache` at arm (before waitForBook, which a one-sided book never
+  satisfies) and re-synced on every book update, so a mid-game tick change or
+  an amount edit reloads it.
+- Decided with the dev, standing in for him: a typed cents box (not a fixed
+  floor), one dollar amount for both sides that he edits, two keys rather than
+  auto-picking the cheaper side, and FAK — the remainder is killed, not rested.
+- `loadConfig` now gives a new action its default key only if no saved binding
+  already uses it (`withDefaults`) — 2 and 5 sat free for weeks.
+- Registered all 22 default accelerators in real Electron (macOS) and rendered
+  the HUD with a stubbed preload; no errors. **Not placed live** — no
+  game-over book was available. First live use should be a $1-2 press.
+- Not done, offered: the same `top()` rule blocks **SELL ALL NOW (7/8) on the
+  winning side** in that state (bids, no asks). A sell needs only a bid. "Sell
+  at 99.9c" works there today because it never reads the book.
 
 `START-HERE.md` is the non-technical setup guide for the trader. `README.md` is
 the engineering overview. Keep both current.

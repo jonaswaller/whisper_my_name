@@ -1,7 +1,7 @@
 # Setup — read this first
 
-Trading hotkeys for Polymarket LoL markets. Eight keys on your numpad, no mouse,
-no browser tab.
+Trading hotkeys for Polymarket LoL markets. Your numpad, no mouse, no browser
+tab.
 
 Everything runs on **your** computer. Your key never leaves it.
 
@@ -120,9 +120,9 @@ and will fire instantly.
         ┌─────┬─────┬─────┐
         │  7  │  8  │  9  │   sell A · sell B · next game
         ├─────┼─────┼─────┤
-        │  4  │  ·  │  6  │   TEAM B   small · big
+        │  4  │  5  │  6  │   TEAM B   small · near-free · big
         ├─────┼─────┼─────┤
-        │  1  │  ·  │  3  │   TEAM A   small · big
+        │  1  │  2  │  3  │   TEAM A   small · near-free · big
         └─────┴─────┴─────┘
 ```
 
@@ -130,8 +130,7 @@ Your **numpad**, laid out exactly as it sits under your hand. They work while
 the stream is fullscreen — you don't need to click the window first.
 
 - **1 / 3** buy Team A small / big, **4 / 6** buy Team B small / big.
-  **2 and 5 do nothing** — that was the "semi-big" size, removed because you
-  never used it.
+  **2 / 5** buy Team A / Team B **near-free** — see below.
 - **7 / 8** sell your whole position in A or B.
 - **9** jumps to the next game in the series, so you don't touch the mouse
   between Game 1 and Game 2.
@@ -142,6 +141,27 @@ Identical behaviour.
 > **Num Lock must be ON.** With it off, Windows turns the numpad into arrow
 > keys and the hotkeys do nothing (on purpose — otherwise your arrow keys would
 > place orders). If a key ever does nothing, check Num Lock first.
+
+### When the bots think the game is over (2 and 5)
+
+Near the end, bots buy the winning team at 99.9c and nobody sells it. The
+losing team can then be bought for 0.1c — but the normal buy keys say
+**"no book"** and refuse, because the book is one-sided. If the bots are wrong
+and the game goes on, those 0.1c shares go back to 2-5c.
+
+**2** buys Team A, **5** buys Team B, at your price or cheaper — never more.
+
+- **Left box = dollars** per press. Starts at $20.
+- **Right box = the most you'll pay, in cents.** Starts at **0.1** (that is
+  0.1c). Type 1 for 1c. It can't go above 5c.
+- It takes whatever is offered at or under your price **right now**. Anything
+  that isn't there is cancelled, free — nothing is left sitting on the book.
+- It works even when the screen shows no prices. That is the point.
+- Some markets can't price as low as 0.1c (their smallest step is 1c). Then the
+  button greys out and the key refuses and says why, rather than paying 1c.
+
+Only a limited number of shares sit at 0.1c — in a typical game-over book it
+might be $15-20 worth. A bigger amount just fills what is there.
 
 ### Resting (limit) orders
 

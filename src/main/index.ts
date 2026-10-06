@@ -14,7 +14,14 @@ import { privateKey } from '@polymarket/client/viem';
 
 import { loadDotEnv, loadCredentials } from '../agent/env.ts';
 import { Session, type Action } from '../agent/session.ts';
-import { loadConfig, saveConfig, validateTier, validateStanding, type TradingConfig } from '../agent/config.ts';
+import {
+  loadConfig,
+  saveConfig,
+  validateTier,
+  validateStanding,
+  validateFloorBuy,
+  type TradingConfig,
+} from '../agent/config.ts';
 import {
   ACTIONS,
   NUMLOCK_OFF_ALIASES,
@@ -157,6 +164,8 @@ async function runAction(id: ActionId): Promise<void> {
       case 'buyA2': return void (await fire({ kind: 'buy', side: 'A', tier: 1 }));
       case 'buyB1': return void (await fire({ kind: 'buy', side: 'B', tier: 0 }));
       case 'buyB2': return void (await fire({ kind: 'buy', side: 'B', tier: 1 }));
+      case 'buyFloorA': return void (await session.buyAtFloor('A'));
+      case 'buyFloorB': return void (await session.buyAtFloor('B'));
       case 'sellA': return void (await fire({ kind: 'sell', side: 'A' }));
       case 'sellB': return void (await fire({ kind: 'sell', side: 'B' }));
       case 'sellAskA': return void (await session.sellAtAsk('A'));
@@ -289,6 +298,13 @@ ipcMain.handle('update-config', async (_e, next: TradingConfig) => {
     maxNotionalPerOrder: next.maxNotionalPerOrder ?? config.maxNotionalPerOrder,
   });
   if (standingProblem) return { ok: false, error: standingProblem };
+
+  const floorProblem = validateFloorBuy({
+    floorBuyNotional: next.floorBuyNotional ?? config.floorBuyNotional,
+    floorBuyCapCents: next.floorBuyCapCents ?? config.floorBuyCapCents,
+    maxNotionalPerOrder: next.maxNotionalPerOrder ?? config.maxNotionalPerOrder,
+  });
+  if (floorProblem) return { ok: false, error: floorProblem };
 
   // Bindings are owned HERE and changed only through 'set-binding'. The
   // renderer holds a config snapshot taken at startup, so accepting its

@@ -206,6 +206,12 @@
       .buy-bid b { color: var(--ok); font-weight: normal; }
       .buy-bid .tag { margin-left: 6px; font-size: 8.5px; padding: 1px 5px; }
 
+      /* Near-free buy: a FAK like the tiers above it, so it shares their grid,
+         but capped in fractions of a cent and fired without a book check. */
+      .floor-row input.floor-cents { width: 100%; }
+      .buy-floor b { color: var(--ok); font-weight: normal; }
+      .buy-floor.notyet { opacity: 0.45; border-color: var(--warn); }
+
       #orders { margin: 0 10px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
       .ohdr {
         display: flex; justify-content: space-between; align-items: center;
@@ -346,6 +352,16 @@
         <div class="pos">flat</div>
         <div class="buy-hdr">BUY</div>
         <div class="rows"></div>
+        <div class="row floor-row">
+          <div class="key floor-key">·</div>
+          <button class="buy buy-floor" title="buys this side only at or under the cents price typed on the right — for when the bots think the game is over and the book has no bids">
+            <div class="lbl">near-free</div>
+            BUY $<b class="floor-amt">–</b> at ≤ <b class="floor-px">–</b>¢
+          </button>
+          <input class="floor-size" type="number" min="1" step="1" title="dollars per near-free buy (both sides)" />
+          <input class="floor-cents" type="number" min="0.1" max="5" step="0.1" title="highest price in CENTS, e.g. 0.1 (both sides)" />
+          <div class="cap floor-cap">–</div>
+        </div>
         <div class="buy-bid-row">
           <div class="key buy-bid-key">·</div>
           <button class="buy-bid" title="standing GTC buy — rests at the bid until filled or cancelled">
@@ -389,6 +405,16 @@
         <div class="pos">flat</div>
         <div class="buy-hdr">BUY</div>
         <div class="rows"></div>
+        <div class="row floor-row">
+          <div class="key floor-key">·</div>
+          <button class="buy buy-floor" title="buys this side only at or under the cents price typed on the right — for when the bots think the game is over and the book has no bids">
+            <div class="lbl">near-free</div>
+            BUY $<b class="floor-amt">–</b> at ≤ <b class="floor-px">–</b>¢
+          </button>
+          <input class="floor-size" type="number" min="1" step="1" title="dollars per near-free buy (both sides)" />
+          <input class="floor-cents" type="number" min="0.1" max="5" step="0.1" title="highest price in CENTS, e.g. 0.1 (both sides)" />
+          <div class="cap floor-cap">–</div>
+        </div>
         <div class="buy-bid-row">
           <div class="key buy-bid-key">·</div>
           <button class="buy-bid" title="standing GTC buy — rests at the bid until filled or cancelled">

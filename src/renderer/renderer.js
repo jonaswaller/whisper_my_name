@@ -55,11 +55,11 @@ const money = (n) => `${n < 0 ? '-' : ''}$${Math.abs(n).toFixed(2)}`;
 const signedMoney = (n) => `${n >= 0 ? '+' : '-'}$${Math.abs(n).toFixed(2)}`;
 const fmt = (n, dp = 2) => (n === null || n === undefined ? '–' : Number(n).toFixed(dp));
 
-/** Build the three buy rows for a side. Inputs are live-editable. */
+/** Build the buy rows (small, big) for a side. Inputs are live-editable. */
 function buildRows(side) {
   const host = $(`#side-${side} .rows`);
   host.innerHTML = '';
-  // Each side has its own three tiers — editing A must not touch B.
+  // Each side has its own tiers — editing A must not touch B.
   (config?.tiers?.[side] ?? []).forEach((tier, i) => {
     const row = document.createElement('div');
     row.className = 'row';
@@ -420,8 +420,31 @@ function renderSellBlock(side, view, openOrders) {
 }
 
 /**
- * Push the two standing-order amounts (resting buy $, cents under bid) back to
- * the agent. Both sides show the same value; whichever box he edits wins.
+ * The near-free buy row. Deliberately not tied to the bid/ask: it exists for
+ * the book that has none. Greyed only when the market's tick cannot price
+ * the cap (0.1c on a 0.01 market), with the reason on hover.
+ */
+function renderFloor(side, view) {
+  const root = $(`#side-${side}`);
+  const floor = view.floor ?? { maxPrice: null, ready: false };
+  $('.floor-amt', root).textContent = config ? String(config.floorBuyNotional) : '–';
+  $('.floor-px', root).textContent = config ? String(config.floorBuyCapCents) : '–';
+
+  const btn = $('.buy-floor', root);
+  btn.classList.toggle('notyet', Boolean(floor.declined));
+  btn.title = floor.declined
+    ? `declines here: ${floor.declined}`
+    : 'buys this side only at or under the cents price typed on the right — for when the bots think the game is over and the book has no bids';
+
+  $('.floor-cap', root).innerHTML = floor.maxPrice === null
+    ? (floor.declined ? '<span class="warn">tick too big</span>' : '–')
+    : `cap ${fmt(floor.maxPrice, 3)}<br><span class="ready ${floor.ready ? 'on' : ''}">${floor.ready ? 'loaded' : '…'}</span>`;
+}
+
+/**
+ * Push a both-sides amount (resting buy $, cents under bid, near-free $ and
+ * cents) back to the agent. Both sides show the same value; whichever box he
+ * edits wins.
  */
 async function pushStandingConfig(field, input) {
   if (!config) return;
@@ -444,6 +467,12 @@ function paintStandingInputs() {
   });
   document.querySelectorAll('.below-bid-cents').forEach((el) => {
     if (document.activeElement !== el) el.value = String(config.sellBelowBidCents);
+  });
+  document.querySelectorAll('.floor-size').forEach((el) => {
+    if (document.activeElement !== el) el.value = String(config.floorBuyNotional);
+  });
+  document.querySelectorAll('.floor-cents').forEach((el) => {
+    if (document.activeElement !== el) el.value = String(config.floorBuyCapCents);
   });
 }
 
@@ -473,6 +502,8 @@ function render(snap) {
   }
   renderSide('A', snap.A);
   renderSide('B', snap.B);
+  renderFloor('A', snap.A);
+  renderFloor('B', snap.B);
   renderSellBlock('A', snap.A, snap.openOrders);
   renderSellBlock('B', snap.B, snap.openOrders);
   renderLog(snap.recent);
@@ -701,6 +732,14 @@ $('#dry').addEventListener('click', async () => {
   belowCents.addEventListener('change', () => pushStandingConfig('sellBelowBidCents', belowCents));
   guardInput(belowCents);
 
+  $('.buy-floor', root).addEventListener('click', () => api.runAction(`buyFloor${side}`));
+  const floorSize = $('.floor-size', root);
+  floorSize.addEventListener('change', () => pushStandingConfig('floorBuyNotional', floorSize));
+  guardInput(floorSize);
+  const floorCents = $('.floor-cents', root);
+  floorCents.addEventListener('change', () => pushStandingConfig('floorBuyCapCents', floorCents));
+  guardInput(floorCents);
+
   const px = $('.limit-px', root);
   $('.sell-limit', root).addEventListener('click', () => api.runAction(`sellLimit${side}`));
   // Prices are typed in CENTS: "88" not "0.88".
@@ -757,6 +796,8 @@ function paintKeys() {
     set('.sell-below-bid', `sellBelowBid${side}`);
     const bk = $('.buy-bid-key', root);
     if (bk) bk.textContent = keyFor(`buyBid${side}`);
+    const fk = $('.floor-key', root);
+    if (fk) fk.textContent = keyFor(`buyFloor${side}`);
   });
   const ca = $('#cancel-all .k');
   if (ca) ca.textContent = keyFor('cancelAll');
@@ -780,6 +821,7 @@ const FLASH_SELECTOR = {
   sellLimitA: '#side-A .sell-limit', sellLimitB: '#side-B .sell-limit',
   sellBelowBidA: '#side-A .sell-below-bid', sellBelowBidB: '#side-B .sell-below-bid',
   buyBidA: '#side-A .buy-bid', buyBidB: '#side-B .buy-bid',
+  buyFloorA: '#side-A .buy-floor', buyFloorB: '#side-B .buy-floor',
   cancelAll: '#cancel-all',
 };
 api.onPressed((id) => {

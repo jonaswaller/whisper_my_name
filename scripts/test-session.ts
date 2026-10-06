@@ -24,16 +24,19 @@ function check(name: string, actual: unknown, expected: unknown): void {
 
 function clientWithResponses(responses: any[]) {
   const marketShares: number[] = [];
+  const marketReqs: any[] = [];
   const limitShares: number[] = [];
   const limitReqs: any[] = [];
   let posts = 0;
   const client = {
     marketShares,
+    marketReqs,
     limitShares,
     limitReqs,
     get posts() { return posts; },
     async createMarketOrder(req: any) {
       marketShares.push(req.shares);
+      marketReqs.push(req);
       return { kind: 'market', req };
     },
     async createLimitOrder(req: any) {
@@ -341,6 +344,121 @@ console.log('\nposition updated from the POST response:\n');
   // (buys also go through createMarketOrder, in dollars, so filter to the sell's share count)
   check('a sell right after the buy sends the just-bought shares', client.marketShares.filter((n) => n != null), [8]);
   check('and it goes through', result?.verdict, 'filled');
+  session.close();
+}
+
+// --- near-free buy (keys 2 / 5) -----------------------------------------------
+// His screenshot: winner bid 99.9c, "No asks". The loser's book is the mirror
+// — offers at 0.1c and no bids — and top() reads a one-sided book as no book,
+// so every buy key refused. The near-free key must go through regardless.
+
+console.log('\nnear-free buy on a book the bots think is over:\n');
+
+/** The loser's side of his screenshot: one-sided, tick 0.001. */
+function gameLooksOver(session: Session): void {
+  const raw = session as any;
+  raw.book.top = () => null;
+  raw.book.tickSize = () => 0.001;
+}
+const floorFill = { success: true, orderId: '0xfloor', status: 'matched', makingAmount: '15.77', takingAmount: '15770' };
+
+{
+  const client = clientWithResponses([floorFill]);
+  const session = makeSession(client, 0);
+  gameLooksOver(session);
+
+  await session.fire({ kind: 'buy', side: 'B', tier: 0 });
+  check('the normal buy key still refuses this book (unchanged)', [client.posts, session.snapshot().lastAction?.detail], [0, 'no book']);
+
+  const result = await session.buyAtFloor('B');
+  const req = client.marketReqs[0];
+  check('the near-free key sends on it', client.posts, 1);
+  check(
+    'a FAK BUY of B for $20, capped at 0.1c',
+    { token: req?.tokenId, side: String(req?.side), type: String(req?.orderType), amount: req?.amount, maxPrice: req?.maxPrice },
+    { token: TOKEN_B, side: 'BUY', type: 'FAK', amount: 20, maxPrice: 0.001 },
+  );
+  check('the fill is reported', result?.verdict, 'filled');
+  check('the shares are on B at once, at 0.001', [session.snapshot().B.shares, session.snapshot().B.avgPrice], [15_770, 0.001]);
+  session.close();
+}
+
+{
+  // Presigned at arm, so the press is a POST only.
+  const client = clientWithResponses([floorFill]);
+  const session = makeSession(client, 0);
+  gameLooksOver(session);
+  (session as any).syncFloor();
+  await new Promise((r) => setTimeout(r, 0));
+  check('both sides load with no book', [session.snapshot().A.floor.ready, session.snapshot().B.floor.ready], [true, true]);
+  const signsBefore = client.marketReqs.length;
+  await session.buyAtFloor('A');
+  check('a loaded press sends without signing first', client.marketReqs.length - signsBefore, 1); // the 1 is the refill behind it
+  check('nothing was signed inline', session.snapshot().recent.some((e) => /signed inline/.test(e.text)), false);
+  session.close();
+}
+
+{
+  // Nothing offered under the cap: killed, free, position untouched.
+  const client = clientWithResponses([{ success: true, orderId: '0xk', status: 'live', makingAmount: '0', takingAmount: '0' }]);
+  const session = makeSession(client, 0);
+  gameLooksOver(session);
+  const result = await session.buyAtFloor('B');
+  check('nothing under the cap: killed, position unchanged', [result?.verdict, session.snapshot().B.shares], ['killed', 0]);
+  session.close();
+}
+
+{
+  // 0.1c on a 0.01 market would have to round UP to 1c — declined instead.
+  const client = clientWithResponses([floorFill]);
+  const session = makeSession(client, 0);
+  (session as any).book.top = () => null;
+  await session.buyAtFloor('B');
+  check('a tick too coarse for the cap sends nothing', client.posts, 0);
+  check('and stamps why', /lowest price is 1c/.test(session.snapshot().lastAction?.detail ?? ''), true);
+  check('the HUD is told it declines', session.snapshot().B.floor.maxPrice, null);
+  session.close();
+}
+
+{
+  // His box says 1c: on a 0.01 market that prices.
+  const client = clientWithResponses([floorFill]);
+  const session = makeSession(client, 0);
+  (session as any).book.top = () => null;
+  (session as any).config.floorBuyCapCents = 1;
+  await session.buyAtFloor('B');
+  check('1c on a 0.01 market sends at 0.01', client.marketReqs[0]?.maxPrice, 0.01);
+  session.close();
+}
+
+{
+  const client = clientWithResponses([floorFill]);
+  const session = makeSession(client, 0);
+  gameLooksOver(session);
+  (session as any).config.dryRun = true;
+  await session.buyAtFloor('B');
+  check('dry run sends nothing', client.posts, 0);
+  check('dry run still stamps', session.snapshot().lastAction?.outcome, 'dry');
+  session.close();
+}
+
+{
+  const client = clientWithResponses([floorFill]);
+  const session = makeSession(client, 0);
+  gameLooksOver(session);
+  (session as any).config.floorBuyNotional = 9_999;
+  await session.buyAtFloor('B');
+  check('above maxNotionalPerOrder: nothing sent', client.posts, 0);
+  check('above the cap is stamped blocked', session.snapshot().lastAction?.outcome, 'blocked');
+  session.close();
+}
+
+{
+  const client = clientWithResponses([floorFill]);
+  const session = makeSession(client, 0);
+  (session as any).market = null;
+  await session.buyAtFloor('A');
+  check('no market armed is stamped', session.snapshot().lastAction?.detail, 'no market armed');
   session.close();
 }
 

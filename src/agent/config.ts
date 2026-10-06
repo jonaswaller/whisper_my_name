@@ -16,6 +16,7 @@ import { resolve } from 'node:path';
 import {
   NUMPAD_BINDINGS as NUMPAD,
   MAC_BINDINGS as MAC,
+  type ActionId,
   type Bindings as ActionBindings,
 } from './actions.ts';
 
@@ -56,6 +57,18 @@ export interface TradingConfig {
    * asked for; tighten it here if the market is fine enough to want one tick.
    */
   sellBelowBidCents: number;
+  /**
+   * Dollars for the near-free buy (keys 2 / 5). One amount for both sides, like
+   * the resting buy. See floorBuy.ts for what the key is for.
+   */
+  floorBuyNotional: number;
+  /**
+   * Highest price the near-free buy pays, in CENTS: 0.1 is $0.001, the lowest
+   * price a 0.001-tick market allows. The order fires without reading the book,
+   * so this cap is its only price protection and is limited to
+   * MAX_FLOOR_CAP_CENTS.
+   */
+  floorBuyCapCents: number;
   /** Refuse to send a buy larger than this, whatever the HUD says. */
   maxNotionalPerOrder: number;
   /** Book older than this disables the unfillable veto (fails open). */
@@ -88,6 +101,8 @@ export const DEFAULT_CONFIG: TradingConfig = {
   sellSlippageCents: 5,
   limitBuyNotional: 200,
   sellBelowBidCents: 1,
+  floorBuyNotional: 20,
+  floorBuyCapCents: 0.1,
   // A backstop against a fat-fingered edit in the HUD, not a trading limit.
   maxNotionalPerOrder: 5000,
   bookFreshMs: 1000,
@@ -96,6 +111,12 @@ export const DEFAULT_CONFIG: TradingConfig = {
   // The product runs on Windows against a numpad; the Mac map is a dev fallback.
   bindings: process.platform === 'darwin' ? { ...MAC } : { ...NUMPAD },
 };
+
+/**
+ * The near-free buy is for a book the bots think is over; it has no business
+ * paying more than a few cents, and it fires without a book check.
+ */
+export const MAX_FLOOR_CAP_CENTS = 5;
 
 const CONFIG_FILE = 'config.local.json';
 
@@ -148,6 +169,28 @@ function dropSemiBig(flat: Record<string, unknown>): ActionBindings {
 }
 
 /**
+ * Saved bindings, plus the platform default for any action never bound —
+ * unless that default key is already his for something else. Keys 2 and 5 sat
+ * free for weeks, and a new action's default must not quietly share a key he
+ * chose: Electron gives a key to only one of them. Such an action arrives
+ * unbound instead, to be given a key in the Keys panel.
+ */
+function withDefaults(saved: ActionBindings): ActionBindings {
+  const out: ActionBindings = { ...saved };
+  const taken = new Set(
+    Object.values(saved)
+      .filter((a): a is string => typeof a === 'string' && a.length > 0)
+      .map((a) => a.toLowerCase()),
+  );
+  for (const [id, accel] of Object.entries(DEFAULT_CONFIG.bindings) as [ActionId, string | null][]) {
+    if (id in out || !accel || taken.has(accel.toLowerCase())) continue;
+    out[id] = accel;
+    taken.add(accel.toLowerCase());
+  }
+  return out;
+}
+
+/**
  * Tiers used to be one shared array of three, then three per side. They are
  * now two per side (small, big). Any saved shape must load with his sizes
  * intact rather than silently reset: a triple keeps its first and last entry.
@@ -182,11 +225,11 @@ export function loadConfig(root = process.cwd()): TradingConfig {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<TradingConfig>;
     // Shallow merge: a config written by an older build must still boot. New
     // actions inherit their default key rather than arriving unbound — but an
-    // action saved as null stays unbound, because the spread keeps the null.
+    // action saved as null stays unbound (see withDefaults).
     return {
       ...structuredClone(DEFAULT_CONFIG),
       ...parsed,
-      bindings: { ...DEFAULT_CONFIG.bindings, ...migrateBindings(parsed.bindings) },
+      bindings: withDefaults(migrateBindings(parsed.bindings)),
       tiers: migrateTiers(parsed.tiers),
     };
   } catch {
@@ -221,5 +264,19 @@ export function validateStanding(
   if (notional > max) return `limit buy size exceeds the ${max} cap`;
   if (!Number.isFinite(cents) || cents < 0) return 'below-bid offset must be zero or more';
   if (cents > 99) return 'below-bid offset cannot exceed 99c';
+  return null;
+}
+
+/** Validate the near-free buy's two HUD fields. */
+export function validateFloorBuy(
+  config: Pick<TradingConfig, 'floorBuyNotional' | 'floorBuyCapCents' | 'maxNotionalPerOrder'>,
+): string | null {
+  const { floorBuyNotional: notional, floorBuyCapCents: cents, maxNotionalPerOrder: max } = config;
+  if (!Number.isFinite(notional) || notional <= 0) return 'near-free buy size must be a positive number';
+  if (notional > max) return `near-free buy size exceeds the ${max} cap`;
+  if (!Number.isFinite(cents) || cents <= 0) return 'near-free price must be above 0c';
+  if (cents > MAX_FLOOR_CAP_CENTS) {
+    return `near-free price cannot exceed ${MAX_FLOOR_CAP_CENTS}c — it fires without checking the book`;
+  }
   return null;
 }

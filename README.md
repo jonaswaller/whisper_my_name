@@ -13,13 +13,14 @@ Numpad, no mouse, no browser:
         ┌─────┬─────┬─────┐
         │  7  │  8  │  9  │   sell A · sell B · next market
         ├─────┼─────┼─────┤
-        │  4  │  ·  │  6  │   TEAM B   small · big
+        │  4  │  5  │  6  │   TEAM B   small · near-free · big
         ├─────┼─────┼─────┤
-        │  1  │  ·  │  3  │   TEAM A   small · big
+        │  1  │  2  │  3  │   TEAM A   small · near-free · big
         └─────┴─────┴─────┘
 ```
 
-(2 and 5 used to be a "semi-big" tier; removed 2026-08-26 as unused.)
+(2 and 5 were a "semi-big" tier until 2026-08-26; since 2026-10-06 they are the
+near-free buy — see below.)
 
 ---
 
@@ -122,6 +123,25 @@ if someone sells into it. Both amounts are editable in the HUD and persist in
 `config.local.json`; the resting buy is capped by `maxNotionalPerOrder` like
 every other buy.
 
+### Near-free buy (2 / 5)
+
+For the end of a game the bots have already called: they bid the winner at
+99.9c, the winner has no asks, and the loser's book is the mirror — offers at
+0.1c and **no bids** (a loser bid at 0.1c would instantly match a 99.9c winner
+bid). `BookFeed.top()` needs both sides, so it returns null and every normal
+buy refuses with "no book". When the bots are wrong and the game goes on, the
+loser goes back to 2-5c.
+
+`2`/`5` send a FAK BUY of `floorBuyNotional` dollars (default $20) capped at
+`floorBuyCapCents` (default 0.1c, max 5c), **without reading the book** — the
+cap is the protection: it cannot pay more than typed, and with nothing offered
+that low it is killed free. The fill pairs his loser BUY with the bots' winner
+BUY (the cross-token match `fills.ts` already inverts). The cap rounds down to
+the tick and declines rather than round up: 0.1c on a 0.01 market is refused,
+not sent at 1c. Because the cap is fixed, the order is presigned at arm and
+never goes stale (`floorBuy.ts`). The normal buy keys are unchanged and still
+refuse a one-sided book.
+
 ## How it works
 
 ```
@@ -207,8 +227,8 @@ otherwise it signs inline and eats the latency.
 ## Layout
 
 ```
-src/agent/     market  book  sizing  presign  executor  fills  positions
-               warmth  session  config  env
+src/agent/     market  book  sizing  presign  floorBuy  executor  fills
+               positions  warmth  session  config  env
 src/main/      Electron main process + hotkeys + preload bridge
 src/renderer/  HUD (plain HTML/JS)
 scripts/       CLI harness, auth check, replay tests, measurements

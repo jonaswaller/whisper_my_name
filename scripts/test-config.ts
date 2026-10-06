@@ -5,7 +5,7 @@
  * to carry bindings back, every rebind made since launch is silently reverted —
  * which is exactly what happened: changing a size reset the hotkeys.
  */
-import { loadConfig, saveConfig, DEFAULT_CONFIG, validateTier, validateStanding } from '../src/agent/config.ts';
+import { loadConfig, saveConfig, DEFAULT_CONFIG, validateTier, validateStanding, validateFloorBuy } from '../src/agent/config.ts';
 import { validateAccelerator, ACTIONS, NUMPAD_BINDINGS, MAC_BINDINGS, findConflict } from '../src/agent/actions.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -153,6 +153,52 @@ check('standing: resting buy above the cap is refused', validateStanding({ limit
 check('standing: zero resting buy is refused', validateStanding({ limitBuyNotional: 0, sellBelowBidCents: 1, maxNotionalPerOrder: 5000 }) !== null, true);
 check('standing: negative under-bid offset is refused', validateStanding({ limitBuyNotional: 200, sellBelowBidCents: -1, maxNotionalPerOrder: 5000 }) !== null, true);
 check('standing: zero under-bid offset (sell AT the bid) is allowed', validateStanding({ limitBuyNotional: 200, sellBelowBidCents: 0, maxNotionalPerOrder: 5000 }), null);
+
+// --- near-free buy (keys 2 / 5) ----------------------------------------------
+console.log('\nnear-free buy config:\n');
+
+check('numpad puts the near-free buys on 2 and 5', [NUMPAD_BINDINGS.buyFloorA, NUMPAD_BINDINGS.buyFloorB], ['num2', 'num5']);
+
+// His current config.local.json predates the key: it must arrive with the
+// $20 / 0.1c defaults and a key, without disturbing anything he set.
+{
+  const { floorBuyNotional: _a, floorBuyCapCents: _b, ...older } = structuredClone(DEFAULT_CONFIG) as any;
+  older.bindings = { ...older.bindings, sellA: 'F5' };
+  delete older.bindings.buyFloorA;
+  delete older.bindings.buyFloorB;
+  saveConfig(older, dir);
+  const upgraded = loadConfig(dir);
+  check('old config gets the $20 near-free default', upgraded.floorBuyNotional, 20);
+  check('old config gets the 0.1c near-free default', upgraded.floorBuyCapCents, 0.1);
+  check('old config gets keys for the near-free buys', [upgraded.bindings.buyFloorA, upgraded.bindings.buyFloorB], [DEFAULT_CONFIG.bindings.buyFloorA, DEFAULT_CONFIG.bindings.buyFloorB]);
+  check('and his own rebinds are untouched', upgraded.bindings.sellA, 'F5');
+}
+
+// Keys 2 and 5 sat free for weeks. If he put something there himself, the new
+// default must not double-book his key — Electron would honour only one.
+{
+  const mine = { ...structuredClone(DEFAULT_CONFIG), bindings: { ...DEFAULT_CONFIG.bindings, cancelAll: DEFAULT_CONFIG.bindings.buyFloorA } } as any;
+  delete mine.bindings.buyFloorA;
+  saveConfig(mine, dir);
+  const back = loadConfig(dir);
+  check('a key he already uses keeps its action', back.bindings.cancelAll, DEFAULT_CONFIG.bindings.buyFloorA);
+  check('the new action arrives unbound instead of sharing it', back.bindings.buyFloorA, undefined);
+  check('the other near-free key still gets its default', back.bindings.buyFloorB, DEFAULT_CONFIG.bindings.buyFloorB);
+}
+
+// An explicit unbind of the new key also survives a restart.
+{
+  saveConfig({ ...structuredClone(DEFAULT_CONFIG), bindings: { ...DEFAULT_CONFIG.bindings, buyFloorA: null } } as any, dir);
+  check('an unbound near-free key stays unbound', loadConfig(dir).bindings.buyFloorA, null);
+}
+
+const floor = (notional: number, cents: number) => validateFloorBuy({ floorBuyNotional: notional, floorBuyCapCents: cents, maxNotionalPerOrder: 5000 });
+check('near-free: $20 at 0.1c passes', floor(20, 0.1), null);
+check('near-free: 1c passes', floor(20, 1), null);
+check('near-free: 0c is refused', floor(20, 0) !== null, true);
+check('near-free: above 5c is refused (it skips the book check)', floor(20, 6) !== null, true);
+check('near-free: zero dollars is refused', floor(0, 0.1) !== null, true);
+check('near-free: above the hard cap is refused', floor(6000, 0.1) !== null, true);
 
 rmSync(dir, { recursive: true, force: true });
 console.log(failures ? `\n${failures} FAILURES\n` : '\nall passed\n');

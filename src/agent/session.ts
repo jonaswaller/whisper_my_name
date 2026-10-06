@@ -18,6 +18,7 @@ import { OrderSide, OrderType } from '@polymarket/bindings';
 import { BookFeed } from './book.ts';
 import { FillFeed, type Fill } from './fills.ts';
 import { PresignCache } from './presign.ts';
+import { FloorOrderCache, floorCap, type FloorTarget } from './floorBuy.ts';
 import { ConnectionWarmer } from './warmth.ts';
 import { dispatch, type ExecutionResult } from './executor.ts';
 import { fetchPositions, type HeldPosition } from './positions.ts';
@@ -36,7 +37,7 @@ import {
   type OpenOrder,
 } from './limitOrders.ts';
 import { resolveEvent, defaultMarket, type ArmableMarket, type ResolvedEvent } from './market.ts';
-import type { TradingConfig } from './config.ts';
+import { validateFloorBuy, type TradingConfig } from './config.ts';
 
 export type Action =
   | { kind: 'buy'; side: 'A' | 'B'; tier: number }
@@ -56,6 +57,12 @@ export interface SideView {
   unrealizedPnl: number;
   /** Per-tier: cap, readiness, and whether the press would be vetoed. */
   tiers: { maxPrice: number | null; ready: boolean; unfillable: boolean; warning?: string }[];
+  /**
+   * The near-free buy. Independent of the book on purpose: it is for exactly
+   * the one-sided book that leaves bid/ask null above. `declined` says why it
+   * cannot price on this market's tick.
+   */
+  floor: { maxPrice: number | null; ready: boolean; declined?: string };
 }
 
 export interface Snapshot {
@@ -150,12 +157,14 @@ const EMPTY_SIDE: SideView = {
   avgPrice: 0,
   unrealizedPnl: 0,
   tiers: [],
+  floor: { maxPrice: null, ready: false },
 };
 
 export class Session extends EventEmitter {
   private book = new BookFeed();
   private fills: FillFeed;
   private presign: PresignCache;
+  private floor: FloorOrderCache;
   private warmer = new ConnectionWarmer();
 
   private event: ResolvedEvent | null = null;
@@ -185,6 +194,7 @@ export class Session extends EventEmitter {
     super();
     this.fills = new FillFeed(client);
     this.presign = new PresignCache(client, this.book, { driftToleranceTicks: 1 });
+    this.floor = new FloorOrderCache(client);
     this.watcher = new ActivityWatcher(config.watchWallet ?? '');
     this.watcher.on('trade', (t: WatchedTrade) => {
       const armed = this.market
@@ -232,6 +242,12 @@ export class Session extends EventEmitter {
     this.fills.on('position', () => this.emit('update'));
     this.presign.on('ready', () => this.emit('update'));
     this.presign.on('error', (e) => this.push('warn', `presign: ${e.message}`));
+    this.floor.on('ready', () => this.emit('update'));
+    this.floor.on('error', (e) => this.push('warn', `near-free presign: ${e.message}`));
+    // The first snapshot can bring a different tick than Gamma reported at arm
+    // time, and the near-free cap is priced on the tick. A comparison when
+    // nothing changed, so cheap enough for every update.
+    this.book.on('update', () => this.syncFloor());
     this.warmer.on('cold', (ms: number) => this.push('warn', `cold connection draw ${Math.round(ms)}ms`));
     // A tick change silently invalidates every presigned cap and shifts the
     // highest legal resting price, so say so and re-sign rather than absorb it.
@@ -272,6 +288,7 @@ export class Session extends EventEmitter {
     const sizesChanged =
       JSON.stringify(next.tiers) !== JSON.stringify(this.config.tiers);
     this.config = next;
+    this.syncFloor();
     if (sizesChanged && this.market) {
       await this.presign.arm(this.presignTargets());
       this.push('info', 'sizes changed — re-signed');
@@ -341,12 +358,34 @@ export class Session extends EventEmitter {
     }));
   }
 
+  private floorTarget(side: 'A' | 'B'): FloorTarget {
+    const outcome = side === 'A' ? this.market!.teamA : this.market!.teamB;
+    return {
+      tokenId: outcome.tokenId,
+      tickSize: this.tickFor(outcome.tokenId),
+      notional: this.config.floorBuyNotional,
+      capCents: this.config.floorBuyCapCents,
+    };
+  }
+
+  /** Keep both near-free buys signed for the current market, amount and tick. */
+  private syncFloor(): void {
+    if (!this.market) return;
+    // Don't load an order a press would refuse anyway.
+    if (validateFloorBuy(this.config)) return;
+    this.floor.sync([this.floorTarget('A'), this.floorTarget('B')]);
+  }
+
   private async armMarket(market: ArmableMarket): Promise<void> {
     this.market = market;
     const tokens = [market.teamA.tokenId, market.teamB.tokenId];
 
     this.book.subscribe(tokens);
     this.fills.watch(tokens);
+    // Needs no book, so load it now rather than after waitForBook — the
+    // one-sided book it exists for may never satisfy that wait.
+    this.floor.reset();
+    this.syncFloor();
 
     // Seed from the Data API: the user channel only reports fills that happen
     // while connected, so without this a sell hotkey thinks he is flat.
@@ -609,6 +648,63 @@ export class Session extends EventEmitter {
       'BUY',
       outcome.tokenId,
       `BUY $${ready.notional} ${outcome.name} cap ${ready.maxPrice}`,
+      started,
+    );
+  }
+
+  /**
+   * Buy at or under the near-free cap (keys 2 / 5) — see floorBuy.ts.
+   *
+   * No book check, deliberately: the late-game book this is for has offers
+   * and no bids, which top() reads as no book at all. The cents cap bounds the
+   * price instead, and an order with nothing offered under it is killed free.
+   * FAK like the other buys — whatever is not there now is not left resting.
+   */
+  async buyAtFloor(side: 'A' | 'B'): Promise<ExecutionResult | null> {
+    const label = `NEAR-FREE ${side}`;
+    const market = this.market;
+    if (!market) {
+      this.stamp(label, 'blocked', null, 'no market armed');
+      this.push('warn', 'no market armed');
+      return null;
+    }
+    const outcome = side === 'A' ? market.teamA : market.teamB;
+
+    const problem = validateFloorBuy(this.config);
+    if (problem) {
+      this.stamp(label, 'blocked', null, problem);
+      this.push('error', `near-free buy refused: ${problem}`);
+      return null;
+    }
+
+    const target = this.floorTarget(side);
+    const { maxPrice, declined } = floorCap(target.capCents, target.tickSize);
+    if (maxPrice === null) {
+      this.stamp(label, 'blocked', null, declined);
+      this.push('warn', `near-free buy declined: ${declined}`);
+      return null;
+    }
+
+    const started = Date.now();
+    let ready;
+    try {
+      ready = await this.floor.take(target);
+    } catch (err: any) {
+      this.stamp(label, 'blocked', null, 'could not sign an order');
+      this.push('error', `could not sign the near-free buy: ${err?.message ?? err}`);
+      return null;
+    }
+    if (!ready) {
+      this.stamp(label, 'blocked', null, 'could not sign an order');
+      this.push('error', 'could not obtain a signed near-free order');
+      return null;
+    }
+    if (!ready.presigned) this.push('warn', `near-free buy signed inline (${ready.signMs}ms)`);
+    return this.send(
+      ready.order,
+      'BUY',
+      outcome.tokenId,
+      `NEAR-FREE BUY $${ready.notional} ${outcome.name} cap ${ready.maxPrice}`,
       started,
     );
   }
@@ -1051,6 +1147,9 @@ export class Session extends EventEmitter {
       };
     });
 
+    const floorTarget = this.floorTarget(which);
+    const floorPrice = floorCap(floorTarget.capCents, floorTarget.tickSize);
+
     return {
       name: outcome.name,
       tokenId: outcome.tokenId,
@@ -1066,6 +1165,11 @@ export class Session extends EventEmitter {
           ? Number((position.shares * (top.bid - position.avgPrice)).toFixed(2))
           : 0,
       tiers,
+      floor: {
+        maxPrice: floorPrice.maxPrice,
+        ready: this.floor.isReady(floorTarget),
+        declined: floorPrice.declined,
+      },
     };
   }
 
@@ -1125,6 +1229,7 @@ export class Session extends EventEmitter {
     this.positionReconcileTimers.clear();
     this.watcher.stop();
     this.presign.close();
+    this.floor.reset();
     this.book.close();
     this.fills.close();
     this.warmer.stop();

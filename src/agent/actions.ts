@@ -12,6 +12,7 @@
 export type ActionId =
   | 'buyA1' | 'buyA2'
   | 'buyB1' | 'buyB2'
+  | 'buyFloorA' | 'buyFloorB'
   | 'sellA' | 'sellB'
   | 'sellAskA' | 'sellAskB'
   | 'sellMaxA' | 'sellMaxB'
@@ -36,6 +37,18 @@ export const ACTIONS: ActionSpec[] = [
   { id: 'buyA2', label: 'Buy A — big', group: 'Buy' },
   { id: 'buyB1', label: 'Buy B — small', group: 'Buy' },
   { id: 'buyB2', label: 'Buy B — big', group: 'Buy' },
+  {
+    id: 'buyFloorA',
+    label: 'Buy A — near-free',
+    group: 'Buy',
+    hint: 'fixed $, only at or under the ¢ price you typed — works when the book looks over',
+  },
+  {
+    id: 'buyFloorB',
+    label: 'Buy B — near-free',
+    group: 'Buy',
+    hint: 'fixed $, only at or under the ¢ price you typed — works when the book looks over',
+  },
 
   { id: 'sellA', label: 'Sell all A', group: 'Sell now', hint: 'market — takes the bid immediately' },
   { id: 'sellB', label: 'Sell all B', group: 'Sell now', hint: 'market — takes the bid immediately' },
@@ -89,12 +102,14 @@ export type Bindings = Partial<Record<ActionId, string | null>>;
  *
  * The digits keep his original layout (1/3 buy A small/big, 4/6 buy B, 7/8
  * sell, 9 next), and the operator keys take the standing-order actions so
- * every feature has a key without needing a modifier chord. 2 and 5 are free —
- * they were the removed semi-big tier.
+ * every feature has a key without needing a modifier chord. 2 and 5 — the
+ * removed semi-big tier's keys, in the middle of each side's row — are the
+ * near-free buys.
  */
 export const NUMPAD_BINDINGS: Bindings = {
   buyA1: 'num1', buyA2: 'num3',
   buyB1: 'num4', buyB2: 'num6',
+  buyFloorA: 'num2', buyFloorB: 'num5',
   sellA: 'num7', sellB: 'num8',
   nextMarket: 'num9',
   cancelAll: 'num0',
@@ -142,6 +157,8 @@ export const MAC_BINDINGS: Bindings = {
   buyA2: 'CommandOrControl+Alt+3',
   buyB1: 'CommandOrControl+Alt+4',
   buyB2: 'CommandOrControl+Alt+6',
+  buyFloorA: 'CommandOrControl+Alt+2',
+  buyFloorB: 'CommandOrControl+Alt+5',
   sellA: 'CommandOrControl+Alt+7',
   sellB: 'CommandOrControl+Alt+8',
   nextMarket: 'CommandOrControl+Alt+9',
